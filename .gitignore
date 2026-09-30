@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.env
+models/
+_tts_*
+.видео/
+.блендер/
+
+!assets/silero/v4_ru.pt
+!assets/silero/
+!assets/avatar/
+!assets/avatar/**

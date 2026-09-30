@@ -1,0 +1,302 @@
+
+========================================
+ALESYA ANATOMICAL HEAD AUDIT
+========================================
+
+REFERENCE is an approximate normalized anatomical model
+of an adult female head used for procedural diagnostics,
+not a universal biological standard.
+
+--- DIMENSIONS (world units) ---
+Width:   0.2050
+Height:  0.5800
+Depth:   0.2921
+
+--- NORMALIZED RATIOS ---
+H / W: 2.829  (ref 1.350)
+D / W: 1.425  (ref 0.720)
+D / H: 0.504
+
+--- PARAMETER COMPARISON ---
+Height / Width
+  Actual:     2.8293
+  Reference:  1.3500
+  Deviation:  +109.58%
+  Status:     CRITICAL
+Depth / Width
+  Actual:     1.4250
+  Reference:  0.7200
+  Deviation:  +97.92%
+  Status:     CRITICAL
+Crown width (t=0.05)
+  Actual:     0.7317
+  Reference:  0.4000
+  Deviation:  +82.93%
+  Status:     CRITICAL
+Forehead width (t=0.20)
+  Actual:     0.9024
+  Reference:  0.8800
+  Deviation:  +2.55%
+  Status:     CLOSE
+Cheekbone width (t=0.45)
+  Actual:     0.9512
+  Reference:  1.0000
+  Deviation:  -4.88%
+  Status:     CLOSE
+Jaw width (t=0.75)
+  Actual:     0.7805
+  Reference:  0.7200
+  Deviation:  +8.40%
+  Status:     SLIGHTLY OFF
+Chin width (t=0.92)
+  Actual:     0.3659
+  Reference:  0.3000
+  Deviation:  +21.95%
+  Status:     CRITICAL
+Max width position (t)
+  Actual:     0.5250
+  Reference:  0.4500
+  Deviation:  +16.67%
+  Status:     SIGNIFICANTLY OFF
+Cheekbone / Jaw
+  Actual:     1.2187
+  Reference:  1.3889
+  Deviation:  -12.25%
+  Status:     SIGNIFICANTLY OFF
+Forehead / Cheekbone
+  Actual:     0.9487
+  Reference:  0.8800
+  Deviation:  +7.81%
+  Status:     SLIGHTLY OFF
+Chin / Jaw
+  Actual:     0.4688
+  Reference:  0.4167
+  Deviation:  +12.50%
+  Status:     SIGNIFICANTLY OFF
+
+--- ACTUAL WIDTH PROFILE ---
+Z=+0.01  ████████████
+Z=+0.07  ██████████████████
+Z=+0.14  ████████████████████
+Z=+0.24  ██████████████████████
+Z=+0.34  ██████████████████████
+Z=+0.42  ██████████████████████
+Z=+0.47  ███████████████████████
+Z=+0.53  ████████████████████████
+Z=+0.62  ██████████████████████
+Z=+0.72  ███████████████████
+Z=+0.84  ████████████████
+Z=+0.99  █████████
+
+--- REFERENCE WIDTH PROFILE ---
+Z=+0.01  ████████
+Z=+0.03  █████████
+Z=+0.04  ██████████
+Z=+0.06  ███████████
+Z=+0.07  ████████████
+Z=+0.09  █████████████
+Z=+0.11  ██████████████
+Z=+0.12  ██████████████
+Z=+0.14  ███████████████
+Z=+0.16  ████████████████
+Z=+0.17  █████████████████
+Z=+0.19  ██████████████████
+Z=+0.21  ██████████████████
+Z=+0.23  ███████████████████
+Z=+0.24  ███████████████████
+Z=+0.26  ████████████████████
+Z=+0.28  ████████████████████
+Z=+0.29  █████████████████████
+Z=+0.31  █████████████████████
+Z=+0.33  ██████████████████████
+Z=+0.34  ██████████████████████
+Z=+0.36  ██████████████████████
+Z=+0.38  ███████████████████████
+Z=+0.39  ███████████████████████
+Z=+0.41  ███████████████████████
+Z=+0.42  ████████████████████████
+Z=+0.44  ████████████████████████
+Z=+0.46  ████████████████████████
+Z=+0.47  ████████████████████████
+Z=+0.49  ████████████████████████
+Z=+0.51  ████████████████████████
+Z=+0.53  ███████████████████████
+Z=+0.54  ███████████████████████
+Z=+0.56  ███████████████████████
+Z=+0.57  ███████████████████████
+Z=+0.59  ██████████████████████
+Z=+0.61  ██████████████████████
+Z=+0.62  ██████████████████████
+Z=+0.64  █████████████████████
+Z=+0.66  █████████████████████
+Z=+0.68  ████████████████████
+Z=+0.69  ████████████████████
+Z=+0.71  ███████████████████
+Z=+0.72  ██████████████████
+Z=+0.74  ██████████████████
+Z=+0.76  █████████████████
+Z=+0.78  ████████████████
+Z=+0.79  ████████████████
+Z=+0.81  ███████████████
+Z=+0.82  ██████████████
+Z=+0.84  ██████████████
+Z=+0.86  █████████████
+Z=+0.88  ████████████
+Z=+0.89  ███████████
+Z=+0.91  ██████████
+Z=+0.93  █████████
+Z=+0.94  ████████
+Z=+0.96  ███████
+Z=+0.97  ██████
+Z=+0.99  ██████
+
+--- ACTUAL SIDE PROFILE (front offset, world units) ---
+Z=+0.01  ← ███████████████████  (-0.1134)
+Z=+0.07  ← ██████████████████████  (-0.1315)
+Z=+0.14  ← ██████████████████████  (-0.1340)
+Z=+0.24  ← ██████████████████████  (-0.1350)
+Z=+0.34  ← ████████████████████████  (-0.1461)
+Z=+0.42  ← ██████████████████████  (-0.1340)
+Z=+0.47  ← ███████████████████████  (-0.1411)
+Z=+0.53  ← ████████████████████████  (-0.1437)
+Z=+0.62  ← █████████████████████  (-0.1260)
+Z=+0.72  ← █████████████████████  (-0.1250)
+Z=+0.84  ← ██████████████████  (-0.1112)
+Z=+0.99  ← ███████████████  (-0.0926)
+
+--- REFERENCE SIDE PROFILE (scaled, world units) ---
+Z=+0.01  ← █████████  (-0.0520)
+Z=+0.03  ← █████████  (-0.0537)
+Z=+0.04  ← █████████  (-0.0554)
+Z=+0.06  ← █████████  (-0.0571)
+Z=+0.07  ← ██████████  (-0.0588)
+Z=+0.09  ← ██████████  (-0.0605)
+Z=+0.11  ← ██████████  (-0.0623)
+Z=+0.12  ← ███████████  (-0.0643)
+Z=+0.14  ← ███████████  (-0.0662)
+Z=+0.16  ← ███████████  (-0.0682)
+Z=+0.17  ← ████████████  (-0.0701)
+Z=+0.19  ← ████████████  (-0.0721)
+Z=+0.21  ← ████████████  (-0.0736)
+Z=+0.23  ← ████████████  (-0.0749)
+Z=+0.24  ← ████████████  (-0.0761)
+Z=+0.26  ← █████████████  (-0.0773)
+Z=+0.28  ← █████████████  (-0.0785)
+Z=+0.29  ← █████████████  (-0.0797)
+Z=+0.31  ← █████████████  (-0.0808)
+Z=+0.33  ← █████████████  (-0.0817)
+Z=+0.34  ← ██████████████  (-0.0826)
+Z=+0.36  ← ██████████████  (-0.0835)
+Z=+0.38  ← ██████████████  (-0.0844)
+Z=+0.39  ← ██████████████  (-0.0852)
+Z=+0.41  ← ██████████████  (-0.0859)
+Z=+0.42  ← ██████████████  (-0.0866)
+Z=+0.44  ← ██████████████  (-0.0873)
+Z=+0.46  ← ██████████████  (-0.0874)
+Z=+0.47  ← ██████████████  (-0.0869)
+Z=+0.49  ← ██████████████  (-0.0864)
+Z=+0.51  ← ██████████████  (-0.0859)
+Z=+0.53  ← ██████████████  (-0.0854)
+Z=+0.54  ← ██████████████  (-0.0850)
+Z=+0.56  ← ██████████████  (-0.0844)
+Z=+0.57  ← ██████████████  (-0.0836)
+Z=+0.59  ← ██████████████  (-0.0829)
+Z=+0.61  ← ██████████████  (-0.0822)
+Z=+0.62  ← █████████████  (-0.0814)
+Z=+0.64  ← █████████████  (-0.0807)
+Z=+0.66  ← █████████████  (-0.0800)
+Z=+0.68  ← █████████████  (-0.0792)
+Z=+0.69  ← █████████████  (-0.0785)
+Z=+0.71  ← █████████████  (-0.0778)
+Z=+0.72  ← █████████████  (-0.0770)
+Z=+0.74  ← █████████████  (-0.0763)
+Z=+0.76  ← ████████████  (-0.0760)
+Z=+0.78  ← ████████████  (-0.0760)
+Z=+0.79  ← ████████████  (-0.0760)
+Z=+0.81  ← ████████████  (-0.0760)
+Z=+0.82  ← ████████████  (-0.0760)
+Z=+0.84  ← ████████████  (-0.0760)
+Z=+0.86  ← █████████████  (-0.0765)
+Z=+0.88  ← █████████████  (-0.0775)
+Z=+0.89  ← █████████████  (-0.0786)
+Z=+0.91  ← █████████████  (-0.0796)
+Z=+0.93  ← █████████████  (-0.0808)
+Z=+0.94  ← ██████████████  (-0.0823)
+Z=+0.96  ← ██████████████  (-0.0838)
+Z=+0.97  ← ██████████████  (-0.0854)
+Z=+0.99  ← ██████████████  (-0.0869)
+
+--- SURFACE COMPLEXITY ---
+Mean curvature:   0.3328
+Min curvature:    0.2379
+Max curvature:    0.4826
+Spread:           0.2447
+Reference shape similarity: 0.762 (1.0 = ideal match with reference profile)
+
+--- ANATOMICAL TRANSITIONS ---
+crown_to_forehead         WEAK             strength 0.1707  (ref 0.3000, ratio 0.57)
+forehead_to_brow          WEAK             strength 0.0244  (ref 0.1500, ratio 0.16)
+brow_to_cheekbone         WEAK             strength 0.0244  (ref 0.1800, ratio 0.14)
+cheekbone_to_cheek        WEAK             strength 0.0488  (ref 0.1000, ratio 0.49)
+cheek_to_jaw              SLIGHTLY WEAK    strength 0.2195  (ref 0.2500, ratio 0.88)
+jaw_to_chin               VERY CLOSE       strength 0.4146  (ref 0.4000, ratio 1.04)
+
+========================================
+PRIMARY DIAGNOSIS
+========================================
+[!] Height / Width: CRITICAL (dev +109.6%)
+[!] Depth / Width: CRITICAL (dev +97.9%)
+[!] Crown width (t=0.05): CRITICAL (dev +82.9%)
+[!] Chin width (t=0.92): CRITICAL (dev +22.0%)
+[!] Max width position (t): SIGNIFICANTLY OFF (dev +16.7%)
+[!] Cheekbone / Jaw: SIGNIFICANTLY OFF (dev -12.3%)
+[!] Chin / Jaw: SIGNIFICANTLY OFF (dev +12.5%)
+[!] Transition crown_to_forehead is weak (ratio 0.57).
+[!] Transition forehead_to_brow is weak (ratio 0.16).
+[!] Transition brow_to_cheekbone is weak (ratio 0.14).
+[!] Transition cheekbone_to_cheek is weak (ratio 0.49).
+[!] Head is too deep (D/W too large).
+
+TAGS
+[x] insufficient anatomical regions
+[x] too deep
+
+========================================
+CONSTRUCTION DIAGNOSIS
+========================================
+Surface complexity:     MEDIUM
+Anatomical separation:  MEDIUM
+Profile accuracy:       LOW
+Silhouette accuracy:    LOW
+
+CONSTRUCTION ADEQUACY: 24.1 / 100
+VERDICT: CHANGE CONSTRUCTION METHOD
+
+========================================
+ALESYA ANATOMICAL HEAD AUDIT — SUMMARY
+========================================
+Overall proportion:     0.0 / 100
+Silhouette similarity:  0.0 / 100
+Profile similarity:     0.0 / 100
+Surface complexity:     48.9 / 100
+Anatomical transitions: 47.8 / 100
+Construction adequacy:  24.1 / 100
+
+TOP PROBLEMS
+  1. Height / Width: CRITICAL (dev +109.6%)
+  2. Depth / Width: CRITICAL (dev +97.9%)
+  3. Crown width (t=0.05): CRITICAL (dev +82.9%)
+  4. Chin width (t=0.92): CRITICAL (dev +22.0%)
+  5. Max width position (t): SIGNIFICANTLY OFF (dev +16.7%)
+
+CONSTRUCTION VERDICT
+  CHANGE CONSTRUCTION METHOD
+
+========================================
+RECOMMENDED NEXT CHANGES
+========================================
+  1. Current construction is insufficient. Build head from explicit anatomical zones: cranium, brow, cheekbone, cheek, jaw, chin.
+  2. Introduce at least 4–5 explicit anatomical zones instead of one continuous deformation.
+  3. Reduce head depth toward reference ~0.72.
+
+========================================

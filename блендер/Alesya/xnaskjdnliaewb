@@ -1,0 +1,2217 @@
+Ниже — полный обновлённый `Alesya/character/head.py` и обновлённый `Alesya/tests/test_head.py`. Production-геометрия не изменена. Диагностика расширена так, чтобы установить точную математическую связь `WIDTH_PROFILE → UV sphere → фактическая ширина среза`.
+
+---
+
+## `Alesya/character/head.py`
+
+```python
+# -*- coding: utf-8 -*-
+"""
+Голова Алеси — параметрическая анатомическая модель (2.5D).
+
+ЭТА ИТЕРАЦИЯ — ЧИСТО ДИАГНОСТИЧЕСКАЯ.
+
+Production-геометрия НЕ изменялась:
+  * HEAD_WIDTH / HEAD_HEIGHT / HEAD_DEPTH — как были
+  * WIDTH_PROFILE / DEPTH_PROFILE / FRONT_PROFILE — как были
+  * локальные маски и их амплитуды — как были
+  * формула деформации и build_head(coll) — как были
+
+Добавлены/уточнены только функции диагностики:
+
+  * _raw_sphere_positions() использует ту же топологию, что и
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=SEGMENTS,
+    ring_count=RINGS), включая полюса и количество долей на
+    каждой параллели: n_theta = max(1, round(segments * sin(phi))).
+
+  * debug_profile_sphere_base() печатает по контрольным z_norm:
+        profile_width      (_interp_width)
+        sphere_factor      sqrt(1 - z^2)
+        expected_width     profile_width * sphere_factor
+        actual_base_width  фактический max(x) - min(x) на срезе базовой
+                            головы
+        actual/profile
+        actual/expected
+
+  * debug_ring_math() показывает для конкретных колец:
+        raw_x_max          max(x) до умножения на half_w
+        profile_width      _interp_width(z_norm)
+        half_w             full_w / 2
+        final_base_x_max   фактический max(x) после умножения
+
+Внешний API сохранён: build_head(coll) -> head_object.
+"""
+
+import bpy
+import math
+from mathutils import Vector
+
+import config as C
+from materials import make_material, assign_material
+from utils import link_to_collection, shade_smooth
+
+
+# ============================================================
+# ПАРАМЕТРЫ ФОРМЫ (не менялись)
+# ============================================================
+
+HEAD_WIDTH          = 0.420
+HEAD_HEIGHT         = 0.600
+HEAD_DEPTH          = 0.290
+
+FACE_FLATNESS       = 0.80
+BACK_FLATNESS       = 0.95
+CHIN_LENGTH         = 0.030
+
+SEGMENTS            = 96
+RINGS               = 64
+
+APPLY_SHADE_SMOOTH  = True
+
+
+# ============================================================
+# 1D ПРОФИЛИ (не менялись)
+# ============================================================
+
+WIDTH_PROFILE = [
+    (+1.00,  0.400),
+    (+0.75,  0.395),
+    (+0.50,  0.375),
+    (+0.30,  0.395),
+    (+0.10,  0.415),
+    (-0.10,  0.420),
+    (-0.30,  0.400),
+    (-0.55,  0.340),
+    (-0.80,  0.190),
+    (-1.00,  0.130),
+]
+
+DEPTH_PROFILE = [
+    (+1.00,  0.290),
+    (+0.75,  0.288),
+    (+0.50,  0.280),
+    (+0.30,  0.278),
+    (+0.10,  0.278),
+    (-0.10,  0.268),
+    (-0.30,  0.258),
+    (-0.55,  0.218),
+    (-0.80,  0.170),
+    (-1.00,  0.155),
+]
+
+FRONT_PROFILE = [
+    (+1.00,  0.000),
+    (+0.75, -0.020),
+    (+0.50, -0.055),
+    (+0.30, -0.055),
+    (+0.10, -0.050),
+    (-0.10, -0.045),
+    (-0.30, -0.025),
+    (-0.55, -0.035),
+    (-0.80, -0.050),
+    (-1.00, -0.050),
+]
+
+Z_CROWN             =  1.00
+Z_FOREHEAD          =  0.45
+Z_CHIN_TOP          = -0.80
+Z_CHIN_BOTTOM       = -1.00
+
+
+# ============================================================
+# АНАТОМИЧЕСКИЕ МАСКИ (амплитуды не менялись)
+# ============================================================
+
+FOREHEAD_X_AMP        = 0.024
+FOREHEAD_Z_CENTER     =  0.40
+FOREHEAD_Z_WIDTH      =  0.20
+FOREHEAD_Y_FRONT_MAX  = -0.02
+
+BROW_Y_AMP            = 0.014
+BROW_Z_CENTER         =  0.16
+BROW_Z_WIDTH          = 0.10
+BROW_X_CENTER         = 0.0
+BROW_X_WIDTH          = 0.42
+
+TEMPLE_X_AMP          = 0.012
+TEMPLE_Z_CENTER       =  0.24
+TEMPLE_Z_WIDTH        = 0.18
+TEMPLE_X_MIN_ABS      =  0.32
+TEMPLE_Y_MAX          =  0.02
+
+CHEEKBONE_X_AMP       = 0.022
+CHEEKBONE_Y_AMP       = 0.012
+CHEEKBONE_Z_CENTER    = -0.10
+CHEEKBONE_Z_WIDTH     = 0.12
+CHEEKBONE_X_MIN_ABS   =  0.20
+CHEEKBONE_Y_FRONT_MAX = -0.02
+
+CHEEK_HOLLOW_X_AMP    = 0.024
+CHEEK_HOLLOW_Y_AMP    = 0.008
+CHEEK_HOLLOW_Z_CENTER = -0.30
+CHEEK_HOLLOW_Z_WIDTH  = 0.12
+CHEEK_HOLLOW_X_MIN_ABS = 0.14
+CHEEK_HOLLOW_Y_FRONT_MAX = -0.02
+
+JAW_X_AMP             = 0.010
+JAW_Z_CENTER          = -0.58
+JAW_Z_WIDTH           = 0.16
+JAW_X_MIN_ABS         = 0.10
+
+JAW_CORNER_X_AMP      = 0.006
+JAW_CORNER_Z_CENTER   = -0.55
+JAW_CORNER_Z_WIDTH    = 0.10
+JAW_CORNER_X_MIN_ABS  = 0.22
+
+CHIN_X_AMP            = 0.032
+CHIN_Y_AMP            = 0.014
+CHIN_Z_CENTER         = -0.86
+CHIN_Z_WIDTH          = 0.14
+CHIN_Y_FRONT_MAX      = -0.02
+
+
+# ============================================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ============================================================
+
+def _smoothstep(edge0, edge1, x):
+    if edge1 == edge0:
+        return 0.0 if x < edge0 else 1.0
+    t = (x - edge0) / (edge1 - edge0)
+    t = max(0.0, min(1.0, t))
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _gauss(z, z_center, z_width):
+    if z_width <= 0:
+        return 0.0
+    d = (z - z_center) / z_width
+    return math.exp(-d * d)
+
+
+def _sample_profile(profile, z_norm):
+    if z_norm >= profile[0][0]:
+        return profile[0][1]
+    if z_norm <= profile[-1][0]:
+        return profile[-1][1]
+    for i in range(len(profile) - 1):
+        z0, v0 = profile[i]
+        z1, v1 = profile[i + 1]
+        if z1 <= z_norm <= z0:
+            t = (z0 - z_norm) / (z0 - z1) if z0 != z1 else 0.0
+            t = max(0.0, min(1.0, t))
+            t_s = t * t * (3.0 - 2.0 * t)
+            return v0 + (v1 - v0) * t_s
+    return profile[-1][1]
+
+
+def _interp_width(z_norm):
+    return _sample_profile(WIDTH_PROFILE, z_norm)
+
+
+def _interp_depth(z_norm):
+    return _sample_profile(DEPTH_PROFILE, z_norm)
+
+
+def _interp_front(z_norm):
+    return _sample_profile(FRONT_PROFILE, z_norm)
+
+
+# ============================================================
+# ЭТАПЫ ДЕФОРМАЦИИ (без изменений)
+# ============================================================
+
+def _apply_forehead(v, hh, hw):
+    z_norm = v.z / hh
+    w_z = _gauss(z_norm, FOREHEAD_Z_CENTER, FOREHEAD_Z_WIDTH)
+    w_y = _smoothstep(0.0, FOREHEAD_Y_FRONT_MAX, v.y)
+    w = w_z * w_y
+    if abs(v.x) > 1e-6:
+        v.x += math.copysign(FOREHEAD_X_AMP * w, v.x)
+
+
+def _apply_brow(v, hh, hw):
+    z_norm = v.z / hh
+    w_z = _gauss(z_norm, BROW_Z_CENTER, BROW_Z_WIDTH)
+    w_x = _gauss(v.x / hw, BROW_X_CENTER / hw, BROW_X_WIDTH)
+    w_y = _smoothstep(0.0, -0.08, v.y)
+    w = w_z * w_x * w_y
+    v.y -= BROW_Y_AMP * w
+
+
+def _apply_temple(v, hh, hw):
+    z_norm = v.z / hh
+    w_z = _gauss(z_norm, TEMPLE_Z_CENTER, TEMPLE_Z_WIDTH)
+    x_abs_norm = abs(v.x) / hw
+    w_x = _smoothstep(TEMPLE_X_MIN_ABS, TEMPLE_X_MIN_ABS + 0.20, x_abs_norm)
+    w_y = _smoothstep(TEMPLE_Y_MAX, TEMPLE_Y_MAX - 0.10, v.y)
+    w = w_z * w_x * w_y
+    if abs(v.x) > 1e-6:
+        v.x -= math.copysign(TEMPLE_X_AMP * w, v.x)
+
+
+def _apply_cheekbone(v, hh, hw):
+    z_norm = v.z / hh
+    w_z = _gauss(z_norm, CHEEKBONE_Z_CENTER, CHEEKBONE_Z_WIDTH)
+    x_abs_norm = abs(v.x) / hw
+    w_x = _smoothstep(CHEEKBONE_X_MIN_ABS,
+                      CHEEKBONE_X_MIN_ABS + 0.25,
+                      x_abs_norm)
+    w_y = _smoothstep(CHEEKBONE_Y_FRONT_MAX,
+                      CHEEKBONE_Y_FRONT_MAX - 0.10, v.y)
+    w = w_z * w_x * w_y
+    if abs(v.x) > 1e-6:
+        v.x += math.copysign(CHEEKBONE_X_AMP * w, v.x)
+    v.y -= CHEEKBONE_Y_AMP * w
+
+
+def _apply_cheek_hollow(v, hh, hw):
+    z_norm = v.z / hh
+    w_z = _gauss(z_norm, CHEEK_HOLLOW_Z_CENTER, CHEEK_HOLLOW_Z_WIDTH)
+    x_abs_norm = abs(v.x) / hw
+    w_x = _smoothstep(CHEEK_HOLLOW_X_MIN_ABS,
+                      CHEEK_HOLLOW_X_MIN_ABS + 0.20,
+                      x_abs_norm)
+    w_y = _smoothstep(CHEEK_HOLLOW_Y_FRONT_MAX,
+                      CHEEK_HOLLOW_Y_FRONT_MAX - 0.10, v.y)
+    w = w_z * w_x * w_y
+    if abs(v.x) > 1e-6:
+        v.x -= math.copysign(CHEEK_HOLLOW_X_AMP * w, v.x)
+    v.y += CHEEK_HOLLOW_Y_AMP * w
+
+
+def _apply_jaw(v, hh, hw):
+    z_norm = v.z / hh
+    x_abs_norm = abs(v.x) / hw
+
+    w_z = _gauss(z_norm, JAW_Z_CENTER, JAW_Z_WIDTH)
+    w_x = _smoothstep(JAW_X_MIN_ABS, JAW_X_MIN_ABS + 0.22, x_abs_norm)
+    w = w_z * w_x
+    if abs(v.x) > 1e-6:
+        v.x += math.copysign(JAW_X_AMP * w, v.x)
+
+    w_z2 = _gauss(z_norm, JAW_CORNER_Z_CENTER, JAW_CORNER_Z_WIDTH)
+    w_x2 = _smoothstep(JAW_CORNER_X_MIN_ABS,
+                       JAW_CORNER_X_MIN_ABS + 0.20,
+                       x_abs_norm)
+    w2 = w_z2 * w_x2
+    if abs(v.x) > 1e-6:
+        v.x += math.copysign(JAW_CORNER_X_AMP * w2, v.x)
+
+
+def _apply_chin(v, hh, hw):
+    z_norm = v.z / hh
+    w_z = _gauss(z_norm, CHIN_Z_CENTER, CHIN_Z_WIDTH)
+
+    x_abs_norm = abs(v.x) / hw
+    w_x = 1.0 - _smoothstep(0.15, 0.35, x_abs_norm)
+    w_body = w_z * w_x
+    if abs(v.x) > 1e-6:
+        v.x += math.copysign(CHIN_X_AMP * w_body, v.x)
+
+    w_y = _smoothstep(CHIN_Y_FRONT_MAX, CHIN_Y_FRONT_MAX - 0.10, v.y)
+    w_proj = w_z * w_x * w_y
+    v.y -= CHIN_Y_AMP * w_proj
+
+
+_STAGE_FUNCS = [
+    ("FOREHEAD",     _apply_forehead),
+    ("BROW",         _apply_brow),
+    ("TEMPLE",       _apply_temple),
+    ("CHEEKBONE",    _apply_cheekbone),
+    ("CHEEK_HOLLOW", _apply_cheek_hollow),
+    ("JAW",          _apply_jaw),
+    ("CHIN",         _apply_chin),
+]
+
+
+# ============================================================
+# КОНТЕЙНЕР ВЕРШИНЫ
+# ============================================================
+
+class _V:
+    __slots__ = ("x", "y", "z", "ring_i", "theta_j", "n_theta", "phi")
+    def __init__(self, x, y, z, ring_i=None, theta_j=None,
+                 n_theta=None, phi=None):
+        self.x = x
+        self.y = y
+        self.z = z
+        self.ring_i = ring_i
+        self.theta_j = theta_j
+        self.n_theta = n_theta
+        self.phi = phi
+
+
+# ============================================================
+# ГЕОМЕТРИЯ: RAW SPHERE / BASE
+# ============================================================
+#
+# ВАЖНО: топология полностью совпадает с
+# bpy.ops.mesh.primitive_uv_sphere_add(segments=SEGMENTS,
+# ring_count=RINGS):
+#   * RINGS+1 параллелей (индексы i = 0..RINGS)
+#   * phi = pi * i / RINGS, z = cos(phi)
+#   * на i=0 и i=RINGS — по 1 вершине (полюс)
+#   * на остальных i: n_theta = max(1, round(SEGMENTS * sin(phi)))
+#   * theta_j = 2*pi*j / n_theta
+
+def _ring_topology(segments=SEGMENTS, rings=RINGS):
+    """Возвращает список (i, phi, n_theta) для каждой параллели."""
+    topo = []
+    for i in range(rings + 1):
+        phi = math.pi * i / rings
+        if i in (0, rings):
+            n_theta = 1
+        else:
+            n_theta = max(1, int(round(segments * math.sin(phi))))
+        topo.append((i, phi, n_theta))
+    return topo
+
+
+def _raw_sphere_positions(segments=SEGMENTS, rings=RINGS):
+    """Исходная единичная UV-сфера с той же топологией, что в Blender."""
+    verts = []
+    for i, phi, n_theta in _ring_topology(segments, rings):
+        z = math.cos(phi)
+        r = math.sin(phi)
+        for j in range(n_theta):
+            u_theta = (2.0 * math.pi * j) / n_theta if n_theta > 0 else 0.0
+            x = r * math.cos(u_theta)
+            y = r * math.sin(u_theta)
+            verts.append(_V(x, y, z, ring_i=i, theta_j=j,
+                            n_theta=n_theta, phi=phi))
+    return verts
+
+
+def _base_vertex_positions(segments=SEGMENTS, rings=RINGS):
+    """Чистая базовая геометрия без масок, та же топология, что в build_head."""
+    verts = []
+    hh = HEAD_HEIGHT * 0.5
+    for i, phi, n_theta in _ring_topology(segments, rings):
+        z = math.cos(phi)
+        r = math.sin(phi)
+        for j in range(n_theta):
+            u_theta = (2.0 * math.pi * j) / n_theta if n_theta > 0 else 0.0
+            x = r * math.cos(u_theta)
+            y = r * math.sin(u_theta)
+
+            z_norm = max(-1.0, min(1.0, z))
+            full_w = _interp_width(z_norm)
+            full_d = _interp_depth(z_norm)
+            front_y = _interp_front(z_norm)
+
+            half_w = min(full_w * 0.5, HEAD_WIDTH * 0.5)
+            half_d = full_d * 0.5
+
+            xx = x * half_w
+            yy = y
+            zz = z
+
+            if yy >= 0:
+                yy *= half_d * BACK_FLATNESS
+            else:
+                yy *= half_d * FACE_FLATNESS
+                yy += front_y
+
+            zz *= hh
+            if z_norm < Z_CHIN_TOP:
+                t = (Z_CHIN_TOP - z_norm) / (Z_CHIN_TOP - Z_CHIN_BOTTOM)
+                zz -= CHIN_LENGTH * t
+
+            if z_norm > Z_FOREHEAD:
+                t = (z_norm - Z_FOREHEAD) / (Z_CROWN - Z_FOREHEAD)
+                zz -= 0.008 * t
+
+            verts.append(_V(xx, yy, zz, ring_i=i, theta_j=j,
+                            n_theta=n_theta, phi=phi))
+
+    base_depth_scale = HEAD_DEPTH / 0.290
+    for v in verts:
+        v.y *= base_depth_scale
+
+    return verts
+
+
+def _apply_stage(verts, stage_name, hh, hw):
+    for name, fn in _STAGE_FUNCS:
+        if name == stage_name:
+            for v in verts:
+                fn(v, hh, hw)
+            return
+    raise ValueError(f"Unknown stage: {stage_name}")
+
+
+def _apply_all_stages(verts, hh, hw):
+    for _, fn in _STAGE_FUNCS:
+        for v in verts:
+            fn(v, hh, hw)
+
+
+# ============================================================
+# ИЗМЕРЕНИЕ ШИРИН ПО СРЕЗАМ
+# ============================================================
+
+def _slice_widths(verts, num_slices=60):
+    if not verts:
+        return []
+
+    zs = [v.z for v in verts]
+    z_max = max(zs)
+    z_min = min(zs)
+    z_range = max(z_max - z_min, 1e-6)
+
+    slices = []
+    for i in range(num_slices):
+        z_top = z_max - (i / num_slices) * z_range
+        z_bot = z_max - ((i + 1) / num_slices) * z_range
+        band = [v for v in verts if z_bot <= v.z <= z_top]
+        if not band:
+            continue
+        xs = [v.x for v in band]
+        slices.append({
+            "z_t": (i + 0.5) / num_slices,
+            "z_top": z_top,
+            "z_bot": z_bot,
+            "width": max(xs) - min(xs),
+            "x_min": min(xs),
+            "x_max": max(xs),
+        })
+    return slices
+
+
+def _width_on_ring(verts, ring_i):
+    """Ширина (max x − min x) на конкретной параллели."""
+    xs = [v.x for v in verts if v.ring_i == ring_i]
+    if not xs:
+        return 0.0, 0.0, 0.0
+    return max(xs) - min(xs), max(xs), min(xs)
+
+
+def _measure_stage_metrics(verts, num_slices=60):
+    if not verts:
+        return None
+
+    xs = [v.x for v in verts]
+    width = max(xs) - min(xs)
+    slices = _slice_widths(verts, num_slices)
+    if not slices:
+        return None
+
+    w_max = max(s["width"] for s in slices) or 1e-6
+    for s in slices:
+        s["width_norm"] = s["width"] / w_max
+
+    def width_at(t):
+        best = min(slices, key=lambda s: abs(s["z_t"] - t))
+        return best["width_norm"]
+
+    peak = max(slices, key=lambda s: s["width"])
+
+    return {
+        "crown":     width_at(0.05),
+        "forehead":  width_at(0.20),
+        "cheekbone": width_at(0.45),
+        "jaw":       width_at(0.75),
+        "chin":      width_at(0.92),
+        "max_t":     peak["z_t"],
+        "total":     width,
+    }
+
+
+# ============================================================
+# ДИАГНОСТИЧЕСКИЕ ФУНКЦИИ
+# ============================================================
+
+DEBUG_Z_SAMPLES = [
+    +1.00, +0.90, +0.75, +0.60, +0.45, +0.30, +0.15, +0.00,
+    -0.15, -0.30, -0.45, -0.55, -0.70, -0.84, -0.90,
+]
+
+# Отдельный список для ring-математики
+RING_DIAG_Z = [+0.90, +0.60, +0.45, +0.30, 0.00, -0.30, -0.55, -0.84]
+
+
+def _find_ring_index_by_z(z_target, verts_raw):
+    """
+    Находит индекс параллели в raw sphere, у которой z = cos(phi)
+    ближе всего к z_target.
+    """
+    best_i = 0
+    best_d = float("inf")
+    for v in verts_raw:
+        if v.n_theta == 1:  # полюса
+            continue
+        d = abs(v.z - z_target)
+        if d < best_d:
+            best_d = d
+            best_i = v.ring_i
+    return best_i
+
+
+def _ring_phi_and_z(ring_i, rings=RINGS):
+    phi = math.pi * ring_i / rings
+    return phi, math.cos(phi)
+
+
+def debug_profile_mapping():
+    print()
+    print("=== BASE PROFILE (pure functions) ===")
+    print(f"{'z_norm':>8}{'width':>10}{'depth':>10}{'front':>10}")
+    for z in DEBUG_Z_SAMPLES:
+        w = _interp_width(z)
+        d = _interp_depth(z)
+        f = _interp_front(z)
+        print(f"{z:>+8.2f}{w:>10.4f}{d:>10.4f}{f:>+10.4f}")
+    print("=== END BASE PROFILE ===")
+    print()
+
+
+def debug_profile_sphere_base():
+    """
+    Точная проверка математической связи:
+
+        WIDTH_PROFILE → UV sphere → фактическая ширина базового среза.
+
+    Для контрольных z_norm печатает:
+      * profile_width      = _interp_width(z_norm)
+      * sphere_factor      = sqrt(max(0, 1 - z_norm^2))
+      * expected_width     = profile_width * sphere_factor
+      * actual_base_width  = фактическая ширина среза базовой головы
+      * actual/profile
+      * actual/expected
+
+    actual_base_width измеряется по той же топологии, что создаёт
+    Blender (RINGS+1 параллелей, n_theta = max(1, round(SEGMENTS*sin phi))).
+    """
+    base = _base_vertex_positions()
+    base_slices = _slice_widths(base, num_slices=200)
+
+    print()
+    print("=== PROFILE → SPHERE → BASE WIDTH ===")
+    print(f"{'z_norm':>8}"
+          f"{'prof_w':>10}"
+          f"{'sph_fac':>10}"
+          f"{'exp_w':>10}"
+          f"{'act_base_w':>13}"
+          f"{'act/prof':>11}"
+          f"{'act/exp':>10}")
+
+    for z in DEBUG_Z_SAMPLES:
+        pw = _interp_width(z)
+        sf = math.sqrt(max(0.0, 1.0 - z * z))
+        ew = pw * sf
+
+        # Найти базовый срез с центром ближе всего к z
+        base_best = min(base_slices, key=lambda s: abs(
+            0.5 * (s["z_top"] + s["z_bot"]) - z))
+        ab = base_best["width"]
+
+        ratio_prof = ab / pw if pw > 1e-9 else 0.0
+        ratio_exp = ab / ew if ew > 1e-9 else 0.0
+
+        print(f"{z:>+8.2f}"
+              f"{pw:>10.4f}"
+              f"{sf:>10.4f}"
+              f"{ew:>10.4f}"
+              f"{ab:>13.4f}"
+              f"{ratio_prof:>11.4f}"
+              f"{ratio_exp:>10.4f}")
+
+    print("=== END PROFILE → SPHERE → BASE WIDTH ===")
+    print()
+
+
+def debug_ring_math():
+    """
+    Показывает для конкретных параллелей:
+      * raw_x_max          max(x) на параллели исходной сферы
+      * profile_width      _interp_width(z_norm)
+      * half_w             min(full_w/2, HEAD_WIDTH/2)
+      * final_base_x_max   фактический max(x) на параллели базовой головы
+    """
+    raw = _raw_sphere_positions()
+    base = _base_vertex_positions()
+
+    print()
+    print("=== RING MATH (raw sphere vs base) ===")
+    print(f"{'z_norm':>8}"
+          f"{'raw_x_max':>12}"
+          f"{'prof_w':>10}"
+          f"{'half_w':>10}"
+          f"{'final_base_x_max':>18}")
+
+    for z_target in RING_DIAG_Z:
+        # Найти подходящую параллель в raw и в base
+        raw_ring_i = _find_ring_index_by_z(z_target, raw)
+        if raw_ring_i is None:
+            continue
+
+        phi, z_ring = _ring_phi_and_z(raw_ring_i)
+        z_norm_ring = max(-1.0, min(1.0, z_ring))
+
+        raw_xs = [v.x for v in raw if v.ring_i == raw_ring_i]
+        if not raw_xs:
+            continue
+        raw_x_max = max(raw_xs)
+
+        base_xs = [v.x for v in base if v.ring_i == raw_ring_i]
+        if not base_xs:
+            continue
+        base_x_max = max(base_xs)
+
+        pw = _interp_width(z_norm_ring)
+        hw = min(pw * 0.5, HEAD_WIDTH * 0.5)
+
+        print(f"{z_norm_ring:>+8.2f}"
+              f"{raw_x_max:>12.4f}"
+              f"{pw:>10.4f}"
+              f"{hw:>10.4f}"
+              f"{base_x_max:>18.4f}")
+
+    print("=== END RING MATH ===")
+    print()
+
+
+def debug_max_width_position():
+    hh = HEAD_HEIGHT * 0.5
+    hw = HEAD_WIDTH * 0.5
+
+    base = _base_vertex_positions()
+    m_base = _measure_stage_metrics(base)
+
+    final = [_V(v.x, v.y, v.z, ring_i=v.ring_i, theta_j=v.theta_j,
+                n_theta=v.n_theta, phi=v.phi) for v in base]
+    _apply_all_stages(final, hh, hw)
+    m_final = _measure_stage_metrics(final)
+
+    print()
+    print("=== MAX WIDTH POSITION ===")
+    print(f"BASE MAX WIDTH POSITION:  t = {m_base['max_t']:.3f}"
+          f"  (width = {m_base['total']:.4f})")
+    print(f"FINAL MAX WIDTH POSITION: t = {m_final['max_t']:.3f}"
+          f"  (width = {m_final['total']:.4f})")
+    print("=== END MAX WIDTH ===")
+    print()
+
+
+def debug_stage_contributions():
+    hh = HEAD_HEIGHT * 0.5
+    hw = HEAD_WIDTH * 0.5
+
+    base = _base_vertex_positions()
+    stages = [("BASE", list(base))]
+
+    current = [_V(v.x, v.y, v.z, ring_i=v.ring_i, theta_j=v.theta_j,
+                  n_theta=v.n_theta, phi=v.phi) for v in base]
+    for name, _ in _STAGE_FUNCS:
+        _apply_stage(current, name, hh, hw)
+        stages.append(("+" + name,
+                       [_V(v.x, v.y, v.z, ring_i=v.ring_i,
+                           theta_j=v.theta_j,
+                           n_theta=v.n_theta, phi=v.phi)
+                        for v in current]))
+
+    print()
+    print("=== STAGED DEFORMATION DIAGNOSTIC ===")
+    header = (f"{'STAGE':<15}"
+              f"{'CROWN':>9}{'FOREHEAD':>11}{'CHEEKBONE':>11}"
+              f"{'JAW':>9}{'CHIN':>9}{'MAX_T':>8}")
+    print(header)
+    print("-" * len(header))
+    for name, verts in stages:
+        m = _measure_stage_metrics(verts)
+        if not m:
+            continue
+        print(f"{name:<15}"
+              f"{m['crown']:>9.4f}"
+              f"{m['forehead']:>11.4f}"
+              f"{m['cheekbone']:>11.4f}"
+              f"{m['jaw']:>9.4f}"
+              f"{m['chin']:>9.4f}"
+              f"{m['max_t']:>8.3f}")
+    print("=== END STAGED DIAGNOSTIC ===")
+    print()
+
+
+def debug_slice_widths():
+    hh = HEAD_HEIGHT * 0.5
+    hw = HEAD_WIDTH * 0.5
+
+    base = _base_vertex_positions()
+    after_cb = [_V(v.x, v.y, v.z, ring_i=v.ring_i, theta_j=v.theta_j,
+                   n_theta=v.n_theta, phi=v.phi) for v in base]
+    _apply_stage(after_cb, "CHEEKBONE", hh, hw)
+
+    base_slices = _slice_widths(base, num_slices=60)
+    cb_slices = _slice_widths(after_cb, num_slices=60)
+
+    print()
+    print("=== CHEEKBONE DELTA (t = 0.30 .. 0.65) ===")
+    print(f"{'t':>6}{'base_w':>10}{'+cb_w':>10}{'delta':>10}")
+    for bs in base_slices:
+        t = bs["z_t"]
+        if not (0.30 <= t <= 0.65):
+            continue
+        best_cb = min(cb_slices, key=lambda s: abs(s["z_t"] - t))
+        delta = best_cb["width"] - bs["width"]
+        print(f"{t:>6.3f}{bs['width']:>10.4f}"
+              f"{best_cb['width']:>10.4f}{delta:>+10.4f}")
+    print("=== END CHEEKBONE DELTA ===")
+    print()
+
+
+# ============================================================
+# ОСНОВНАЯ ФУНКЦИЯ (production, без изменений)
+# ============================================================
+
+def build_head(coll):
+    """Строит голову — единый mesh."""
+    mat_skin = make_material("Alesya_Skin", C.SKIN_COLOR,
+                             roughness=0.55, specular=0.25)
+
+    bpy.ops.mesh.primitive_uv_sphere_add(
+        segments=SEGMENTS, ring_count=RINGS,
+        location=(0, 0, C.HEAD_CENTER_Z), radius=1.0)
+    head = bpy.context.active_object
+    head.name = "Alesya_Head"
+
+    hh = HEAD_HEIGHT * 0.5
+    me = head.data
+
+    for v in me.vertices:
+        x, y, z = v.co.x, v.co.y, v.co.z
+
+        z_norm = max(-1.0, min(1.0, z))
+
+        full_w = _interp_width(z_norm)
+        full_d = _interp_depth(z_norm)
+        front_y = _interp_front(z_norm)
+
+        half_w = min(full_w * 0.5, HEAD_WIDTH * 0.5)
+        half_d = full_d * 0.5
+
+        x *= half_w
+
+        if y >= 0:
+            y *= half_d * BACK_FLATNESS
+        else:
+            y *= half_d * FACE_FLATNESS
+            y += front_y
+
+        z *= hh
+        if z_norm < Z_CHIN_TOP:
+            t = (Z_CHIN_TOP - z_norm) / (Z_CHIN_TOP - Z_CHIN_BOTTOM)
+            z -= CHIN_LENGTH * t
+
+        if z_norm > Z_FOREHEAD:
+            t = (z_norm - Z_FOREHEAD) / (Z_CROWN - Z_FOREHEAD)
+            z -= 0.008 * t
+
+        v.co.x = x
+        v.co.y = y
+        v.co.z = z
+
+    base_depth_scale = HEAD_DEPTH / 0.290
+    for v in me.vertices:
+        v.co.y *= base_depth_scale
+
+    for v in me.vertices:
+        v.co.z += C.HEAD_CENTER_Z
+
+    work_hw = HEAD_WIDTH * 0.5
+    work_hh = HEAD_HEIGHT * 0.5
+
+    for v in me.vertices:
+        local_z = v.co.z - C.HEAD_CENTER_Z
+        tmp = _V(v.co.x, v.co.y, local_z)
+        for _, fn in _STAGE_FUNCS:
+            fn(tmp, work_hh, work_hw)
+        v.co.x = tmp.x
+        v.co.y = tmp.y
+        v.co.z = tmp.z + C.HEAD_CENTER_Z
+
+    if APPLY_SHADE_SMOOTH:
+        shade_smooth(head)
+
+    assign_material(head, mat_skin)
+    link_to_collection(head, coll)
+
+    return head
+```
+
+---
+
+## `Alesya/tests/test_head.py`
+
+Изменения: в начале `run_test()` добавляются вызовы `debug_profile_sphere_base()` и `debug_ring_math()`. Остальной аудит не тронут.
+
+```python
+# -*- coding: utf-8 -*-
+"""
+Alesya — аудит геометрии головы.
+Публичный API: run_test() -> None.
+"""
+
+import math
+import bpy
+from mathutils import Vector
+
+import config as C
+from utils import get_or_create_collection
+from character.head import (
+    build_head,
+    debug_profile_mapping,
+    debug_profile_sphere_base,
+    debug_ring_math,
+    debug_max_width_position,
+    debug_stage_contributions,
+    debug_slice_widths,
+)
+
+
+# ============================================================
+# 1. КОНФИГУРАЦИЯ ТЕСТА
+# ============================================================
+
+TEST_COLLECTION_NAME = "Alesya_Head_Test"
+RENDER_RESOLUTION    = 600
+CAM_DISTANCE         = 1.10
+CAM_HEIGHT           = C.HEAD_CENTER_Z
+
+NUM_SLICES           = 60
+
+THRESH_VERY_CLOSE       = 2.0
+THRESH_CLOSE            = 5.0
+THRESH_SLIGHTLY_OFF     = 10.0
+THRESH_SIGNIFICANTLY    = 20.0
+
+TRANS_VERY_CLOSE_MIN   = 0.90
+TRANS_VERY_CLOSE_MAX   = 1.10
+TRANS_SLIGHT_WEAK_MIN  = 0.75
+TRANS_SLIGHT_STRONG_MAX = 1.25
+
+ELLIPSOID_SIMILARITY_HI = 0.85
+
+W_SILHOUETTE   = 0.25
+W_PROFILE      = 0.25
+W_CURVATURE    = 0.20
+W_TRANSITIONS  = 0.15
+W_NONELLIPSOID = 0.15
+
+
+# ============================================================
+# 2. ЭТАЛОН
+# ============================================================
+
+REF_HEAD_TOTAL_WIDTH    = 1.00
+REF_HEAD_TOTAL_HEIGHT   = 1.35
+REF_HEAD_TOTAL_DEPTH    = 0.72
+
+REF_ZONES = [
+    (0.00,  0.30,  0.65,  0.35),
+    (0.10,  0.55,  0.78,  0.42),
+    (0.20,  0.75,  0.88,  0.50),
+    (0.30,  0.88,  0.92,  0.55),
+    (0.38,  0.95,  0.94,  0.58),
+    (0.45,  1.00,  0.95,  0.60),
+    (0.55,  0.97,  0.92,  0.58),
+    (0.65,  0.88,  0.86,  0.55),
+    (0.75,  0.72,  0.78,  0.52),
+    (0.85,  0.55,  0.66,  0.52),
+    (0.92,  0.38,  0.52,  0.55),
+    (1.00,  0.22,  0.38,  0.60),
+]
+
+REF_MAX_WIDTH_T          = 0.45
+REF_CHEEKBONE_WIDTH      = 1.00
+REF_JAW_WIDTH            = 0.72
+REF_CHIN_WIDTH           = 0.30
+REF_FOREHEAD_WIDTH       = 0.88
+REF_CROWN_WIDTH          = 0.40
+
+REF_TRANSITIONS = {
+    "crown_to_forehead":   0.30,
+    "forehead_to_brow":    0.15,
+    "brow_to_cheekbone":   0.18,
+    "cheekbone_to_cheek":  0.10,
+    "cheek_to_jaw":        0.25,
+    "jaw_to_chin":         0.40,
+}
+
+
+# ============================================================
+# 3. УТИЛИТЫ
+# ============================================================
+
+def _output_dir():
+    from pathlib import Path
+    here = Path(__file__).resolve()
+    return here.parent / "test_output"
+
+
+def _clamp(v, a, b):
+    return max(a, min(b, v))
+
+
+def _lerp(a, b, t):
+    return a + (b - a) * t
+
+
+def _interp_zones(zones, t, idx):
+    if t <= zones[0][0]:
+        return zones[0][idx]
+    if t >= zones[-1][0]:
+        return zones[-1][idx]
+    for i in range(len(zones) - 1):
+        t0 = zones[i][0]
+        t1 = zones[i + 1][0]
+        if t0 <= t <= t1:
+            k = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
+            return _lerp(zones[i][idx], zones[i + 1][idx], k)
+    return zones[-1][idx]
+
+
+def _clear_scene():
+    bpy.ops.object.select_all(action='SELECT')
+    bpy.ops.object.delete(use_global=False)
+    for block in (bpy.data.meshes, bpy.data.materials, bpy.data.cameras,
+                  bpy.data.lights, bpy.data.curves, bpy.data.images):
+        for item in list(block):
+            try:
+                block.remove(item)
+            except Exception:
+                pass
+
+
+# ============================================================
+# 4. МЕТРИКИ
+# ============================================================
+
+def _collect_vertices(head_obj):
+    mw = head_obj.matrix_world
+    return [mw @ v.co for v in head_obj.data.vertices]
+
+
+def _bounding_box(verts):
+    xs = [v.x for v in verts]
+    ys = [v.y for v in verts]
+    zs = [v.z for v in verts]
+    return (min(xs), max(xs), min(ys), max(ys), min(zs), max(zs))
+
+
+def _measure_slices(verts, num_slices):
+    min_x, max_x, min_y, max_y, min_z, max_z = _bounding_box(verts)
+    z_range = max(max_z - min_z, 1e-6)
+
+    slices = []
+    for i in range(num_slices):
+        z_top = max_z - (i / num_slices) * z_range
+        z_bot = max_z - ((i + 1) / num_slices) * z_range
+        band = [v for v in verts if z_bot <= v.z <= z_top]
+        if not band:
+            continue
+        xs = [v.x for v in band]
+        ys = [v.y for v in band]
+        width = max(xs) - min(xs)
+        depth = max(ys) - min(ys)
+        y_center = (max(ys) + min(ys)) * 0.5
+        y_front = min(ys)
+        y_back = max(ys)
+        front_local = y_front - y_center
+        slices.append({
+            "z": (z_top + z_bot) * 0.5,
+            "z_t": (i + 0.5) / num_slices,
+            "width": width,
+            "depth": depth,
+            "x_min": min(xs),
+            "x_max": max(xs),
+            "y_front": y_front,
+            "y_back": y_back,
+            "y_center": y_center,
+            "front_local": front_local,
+        })
+
+    return {
+        "slices": slices,
+        "min_x": min_x, "max_x": max_x,
+        "min_y": min_y, "max_y": max_y,
+        "min_z": min_z, "max_z": max_z,
+        "width": max_x - min_x,
+        "depth": max_y - min_y,
+        "height": max_z - min_z,
+    }
+
+
+def _normalize_slices(slices_data):
+    w_max = max((s["width"] for s in slices_data["slices"]), default=1e-6)
+    d_max = max((s["depth"] for s in slices_data["slices"]), default=1e-6)
+    h_total = max(slices_data["height"], 1e-6)
+
+    out = []
+    for s in slices_data["slices"]:
+        out.append({
+            "z_t": s["z_t"],
+            "width": s["width"] / w_max,
+            "depth": s["depth"] / d_max,
+            "front_local": s["front_local"],
+            "z_world": s["z"],
+            "z_norm": (s["z"] - slices_data["min_z"]) / h_total,
+        })
+    return out, w_max, d_max
+
+
+def _reference_slices(num_slices, actual_front_scale):
+    ref = []
+    for i in range(num_slices):
+        t = (i + 0.5) / num_slices
+        w = _interp_zones(REF_ZONES, t, 1)
+        d = _interp_zones(REF_ZONES, t, 2)
+        f = _interp_zones(REF_ZONES, t, 3)
+        ref.append({
+            "z_t": t,
+            "width": w,
+            "depth": d,
+            "front_local": -f * actual_front_scale,
+        })
+    return ref
+
+
+# ============================================================
+# 5. КРИВИЗНА
+# ============================================================
+
+def _estimate_curvature(verts, head_obj, k_neighbors=8):
+    mesh = head_obj.data
+    mw = head_obj.matrix_world
+
+    neighbors = [[] for _ in range(len(mesh.vertices))]
+    for edge in mesh.edges:
+        a, b = edge.vertices
+        neighbors[a].append(b)
+        neighbors[b].append(a)
+
+    curv = []
+    for i, v in enumerate(mesh.vertices):
+        p = mw @ v.co
+        nb = neighbors[i]
+        if not nb:
+            curv.append(0.0)
+            continue
+        nb = nb[:k_neighbors]
+        pts = [mw @ mesh.vertices[j].co for j in nb]
+        mean = Vector((0.0, 0.0, 0.0))
+        for q in pts:
+            mean += q
+        mean /= len(pts)
+        offset = (p - mean).length
+        avg_dist = sum((q - p).length for q in pts) / len(pts)
+        avg_dist = max(avg_dist, 1e-6)
+        curv.append(offset / avg_dist)
+    return curv
+
+
+def _curvature_zone_profile(verts, curv, slices_data):
+    min_z = slices_data["min_z"]
+    max_z = slices_data["max_z"]
+    z_range = max(max_z - min_z, 1e-6)
+    bins = [[] for _ in range(10)]
+    for v, c in zip(verts, curv):
+        t = (max_z - v.z) / z_range
+        i = _clamp(int(t * 10), 0, 9)
+        bins[i].append(c)
+    return [sum(b) / len(b) if b else 0.0 for b in bins]
+
+
+# ============================================================
+# 6. ПЕРЕХОДЫ
+# ============================================================
+
+def _transitions_from_profile(norm_slices):
+    def width_at(t):
+        best = min(norm_slices, key=lambda s: abs(s["z_t"] - t))
+        return best["width"]
+
+    pairs = [
+        ("crown_to_forehead",   0.05, 0.20),
+        ("forehead_to_brow",    0.20, 0.38),
+        ("brow_to_cheekbone",   0.38, 0.45),
+        ("cheekbone_to_cheek",  0.45, 0.55),
+        ("cheek_to_jaw",        0.55, 0.75),
+        ("jaw_to_chin",         0.75, 0.95),
+    ]
+    return {name: abs(width_at(t1) - width_at(t0))
+            for name, t0, t1 in pairs}
+
+
+def _classify_transition(strength, ref_strength):
+    ratio = strength / max(ref_strength, 1e-6)
+    if TRANS_VERY_CLOSE_MIN <= ratio <= TRANS_VERY_CLOSE_MAX:
+        return "VERY CLOSE", ratio
+    if TRANS_SLIGHT_WEAK_MIN <= ratio < TRANS_VERY_CLOSE_MIN:
+        return "SLIGHTLY WEAK", ratio
+    if TRANS_VERY_CLOSE_MAX < ratio <= TRANS_SLIGHT_STRONG_MAX:
+        return "SLIGHTLY STRONG", ratio
+    if ratio < TRANS_SLIGHT_WEAK_MIN:
+        return "WEAK", ratio
+    return "STRONG", ratio
+
+
+# ============================================================
+# 7. СРАВНЕНИЕ С ЭТАЛОНОМ
+# ============================================================
+
+def _reference_shape_similarity(norm_slices, ref_slices):
+    if not norm_slices or not ref_slices:
+        return 0.0
+    n = min(len(norm_slices), len(ref_slices))
+    total_err = 0.0
+    for i in range(n):
+        total_err += abs(norm_slices[i]["width"] - ref_slices[i]["width"])
+        total_err += abs(norm_slices[i]["depth"] - ref_slices[i]["depth"])
+    avg_err = total_err / (2 * n)
+    return _clamp(1.0 - avg_err, 0.0, 1.0)
+
+
+def _classify_deviation(actual, reference):
+    if reference == 0:
+        return "CRITICAL", float('inf')
+    pct = (actual - reference) / abs(reference) * 100.0
+    a = abs(pct)
+    if a <= THRESH_VERY_CLOSE:
+        return "VERY CLOSE", pct
+    if a <= THRESH_CLOSE:
+        return "CLOSE", pct
+    if a <= THRESH_SLIGHTLY_OFF:
+        return "SLIGHTLY OFF", pct
+    if a <= THRESH_SIGNIFICANTLY:
+        return "SIGNIFICANTLY OFF", pct
+    return "CRITICAL", pct
+
+
+def _parameter_row(label, actual, reference):
+    status, pct = _classify_deviation(actual, reference)
+    return {
+        "label": label,
+        "actual": actual,
+        "reference": reference,
+        "deviation_pct": pct,
+        "status": status,
+    }
+
+
+# ============================================================
+# 8. ASCII ГРАФИКИ
+# ============================================================
+
+def _ascii_bar(value, max_value, width=24):
+    if max_value <= 0:
+        return ""
+    n = int(round(width * value / max_value))
+    n = _clamp(n, 0, width)
+    return "█" * n
+
+
+# ============================================================
+# 9. СЦЕНА
+# ============================================================
+
+def _setup_render():
+    scene = bpy.context.scene
+    try:
+        scene.render.engine = 'BLENDER_EEVEE_NEXT'
+    except Exception:
+        scene.render.engine = 'BLENDER_EEVEE'
+    scene.render.resolution_x = RENDER_RESOLUTION
+    scene.render.resolution_y = RENDER_RESOLUTION
+    scene.render.resolution_percentage = 100
+    scene.render.film_transparent = False
+    scene.view_settings.view_transform = 'Standard'
+    scene.render.image_settings.file_format = 'PNG'
+
+
+def _setup_world():
+    world = bpy.data.worlds.get("World") or bpy.data.worlds.new("World")
+    bpy.context.scene.world = world
+    world.use_nodes = True
+    bg = world.node_tree.nodes.get("Background")
+    if bg:
+        bg.inputs[0].default_value = (0.55, 0.55, 0.58, 1.0)
+        bg.inputs[1].default_value = 0.9
+
+
+def _setup_lights():
+    coll = get_or_create_collection("Alesya_Head_Test_Lights")
+    for name, energy, size, loc, rot in [
+        ("Test_Key",  400, 2.5, (-1.5, -2.2, CAM_HEIGHT + 0.6), (1.05, 0.0, -0.55)),
+        ("Test_Fill",  90, 2.5, ( 1.8, -1.8, CAM_HEIGHT + 0.1), (1.25, 0.0,  0.90)),
+        ("Test_Rim",  120, 1.8, ( 0.0,  2.4, CAM_HEIGHT + 0.7), (-1.05, 0.0, 3.14)),
+    ]:
+        ld = bpy.data.lights.new(name, type='AREA')
+        ld.energy = energy
+        ld.size = size
+        ld.color = (1.0, 1.0, 1.0)
+        o = bpy.data.objects.new(name, ld)
+        o.location = loc
+        o.rotation_euler = rot
+        coll.objects.link(o)
+
+
+def _build_cameras():
+    coll = get_or_create_collection("Alesya_Head_Test_Cameras")
+
+    def make(name, location, rotation):
+        cd = bpy.data.cameras.new(name + "_Data")
+        cd.lens = 65.0
+        cd.type = 'PERSP'
+        o = bpy.data.objects.new(name, cd)
+        o.location = location
+        o.rotation_euler = rotation
+        coll.objects.link(o)
+        return o
+
+    d = CAM_DISTANCE
+    h = CAM_HEIGHT
+
+    front = make("Alesya_Test_Camera_Front",
+                 (0.0, -d, h), (math.radians(90), 0.0, 0.0))
+    profile = make("Alesya_Test_Camera_Profile",
+                   (d, 0.0, h), (math.radians(90), 0.0, math.radians(90)))
+
+    ang = math.radians(40)
+    cx = -d * math.sin(ang)
+    cy = -d * math.cos(ang)
+    three_q = make("Alesya_Test_Camera_3Q",
+                   (cx, cy, h), (math.radians(90), 0.0, ang))
+
+    top = make("Alesya_Test_Camera_Top",
+               (0.0, 0.0, h + d), (0.0, 0.0, 0.0))
+
+    return {"front": front, "profile": profile, "3q": three_q, "top": top}
+
+
+def _render_all(cameras, output_dir):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    scene = bpy.context.scene
+    for key, fname in [
+        ("front",   "head_test_front.png"),
+        ("profile", "head_test_profile.png"),
+        ("3q",      "head_test_3q.png"),
+        ("top",     "head_test_top.png"),
+    ]:
+        cam = cameras.get(key)
+        if not cam:
+            continue
+        scene.camera = cam
+        scene.render.filepath = str(output_dir / fname)
+        bpy.ops.render.render(write_still=True)
+
+
+# ============================================================
+# 10. ПАРАМЕТРЫ И ПЕРЕХОДЫ
+# ============================================================
+
+def _build_parameter_table(slices_data, norm_slices):
+    rows = []
+    w = slices_data["width"]
+    h = slices_data["height"]
+    d = slices_data["depth"]
+
+    rows.append(_parameter_row("Height / Width", h / max(w, 1e-6),
+                               REF_HEAD_TOTAL_HEIGHT))
+    rows.append(_parameter_row("Depth / Width", d / max(w, 1e-6),
+                               REF_HEAD_TOTAL_DEPTH))
+
+    def width_at(t):
+        best = min(norm_slices, key=lambda s: abs(s["z_t"] - t))
+        return best["width"]
+
+    rows.append(_parameter_row("Crown width (t=0.05)",
+                               width_at(0.05), REF_CROWN_WIDTH))
+    rows.append(_parameter_row("Forehead width (t=0.20)",
+                               width_at(0.20), REF_FOREHEAD_WIDTH))
+    rows.append(_parameter_row("Cheekbone width (t=0.45)",
+                               width_at(0.45), REF_CHEEKBONE_WIDTH))
+    rows.append(_parameter_row("Jaw width (t=0.75)",
+                               width_at(0.75), REF_JAW_WIDTH))
+    rows.append(_parameter_row("Chin width (t=0.92)",
+                               width_at(0.92), REF_CHIN_WIDTH))
+
+    peak = max(norm_slices, key=lambda s: s["width"])
+    rows.append(_parameter_row("Max width position (t)",
+                               peak["z_t"], REF_MAX_WIDTH_T))
+
+    cb = width_at(0.45)
+    jw = width_at(0.75)
+    ch = width_at(0.92)
+    fh = width_at(0.20)
+    rows.append(_parameter_row("Cheekbone / Jaw",
+                               cb / max(jw, 1e-6), 1.0 / 0.72))
+    rows.append(_parameter_row("Forehead / Cheekbone",
+                               fh / max(cb, 1e-6), 0.88 / 1.00))
+    rows.append(_parameter_row("Chin / Jaw",
+                               ch / max(jw, 1e-6), 0.30 / 0.72))
+
+    return rows, peak
+
+
+def _build_anatomical_transitions(norm_slices):
+    tr = _transitions_from_profile(norm_slices)
+    out = []
+    for name, strength in tr.items():
+        ref = REF_TRANSITIONS.get(name, 0.25)
+        status, ratio = _classify_transition(strength, ref)
+        out.append({
+            "name": name,
+            "strength": strength,
+            "reference": ref,
+            "ratio": ratio,
+            "status": status,
+        })
+    return out
+
+
+def _diagnose_problems(param_rows, transitions, curv_zone, shape_sim,
+                       slices_data, norm_slices):
+    problems = []
+    tags = set()
+
+    for row in param_rows:
+        if row["status"] in ("SIGNIFICANTLY OFF", "CRITICAL"):
+            problems.append(f"{row['label']}: {row['status']} "
+                            f"(dev {row['deviation_pct']:+.1f}%)")
+
+    if shape_sim > ELLIPSOID_SIMILARITY_HI:
+        problems.append("Surface behaves like a single smooth ellipsoid.")
+        tags.update(["ellipsoid-like", "insufficient curvature"])
+
+    if curv_zone:
+        cmin = min(curv_zone)
+        cmax = max(curv_zone)
+        spread = cmax - cmin
+        if spread < 0.05:
+            problems.append("Local curvature is uniformly low.")
+            tags.add("insufficient curvature")
+        if cmin > 0.0 and cmax / max(cmin, 1e-6) > 8.0:
+            problems.append("Curvature changes abruptly between zones.")
+            tags.add("abrupt transitions")
+
+    for t in transitions:
+        if t["status"] == "WEAK":
+            problems.append(f"Transition {t['name']} is weak "
+                            f"(ratio {t['ratio']:.2f}).")
+            tags.add("insufficient anatomical regions")
+        if t["status"] == "STRONG":
+            problems.append(f"Transition {t['name']} is too strong "
+                            f"(ratio {t['ratio']:.2f}).")
+            tags.add("abrupt transitions")
+
+    ratio_dw = slices_data["depth"] / max(slices_data["width"], 1e-6)
+    if ratio_dw < 0.55:
+        problems.append("Head is too flat (D/W too small).")
+        tags.add("too flat")
+    if ratio_dw > 0.90:
+        problems.append("Head is too deep (D/W too large).")
+        tags.add("too deep")
+
+    def front_at(t):
+        best = min(norm_slices, key=lambda s: abs(s["z_t"] - t))
+        return best["front_local"]
+
+    if front_at(0.20) > -0.03:
+        problems.append("Forehead projection is insufficient.")
+        tags.add("forehead problem")
+    if front_at(0.45) > -0.025:
+        problems.append("Mid-face projection is insufficient.")
+        tags.add("cheekbone problem")
+    if front_at(0.92) > -0.025:
+        problems.append("Chin projection is insufficient.")
+        tags.add("chin problem")
+
+    if not problems:
+        problems.append("No significant geometric problems detected.")
+
+    return problems, tags
+
+
+def _compute_construction_adequacy(param_rows, transitions, shape_sim,
+                                   curv_zone):
+    sil_err = 0.0
+    for row in param_rows:
+        if "Width" in row["label"] or row["label"].endswith("width"):
+            sil_err += abs(row["deviation_pct"])
+    sil_score = max(0.0, 100.0 - sil_err * 2.0)
+
+    prof_err = 0.0
+    for row in param_rows:
+        if "Depth" in row["label"] or "Height" in row["label"]:
+            prof_err += abs(row["deviation_pct"])
+    prof_score = max(0.0, 100.0 - prof_err * 2.0)
+
+    if curv_zone:
+        spread = max(curv_zone) - min(curv_zone)
+        curv_score = _clamp(spread * 200.0, 0.0, 100.0)
+    else:
+        curv_score = 0.0
+
+    if transitions:
+        ratios = [t["ratio"] for t in transitions]
+        dev = sum(min(abs(r - 1.0), 0.5) for r in ratios) / len(ratios)
+        trans_score = max(0.0, 100.0 - dev * 150.0)
+    else:
+        trans_score = 0.0
+
+    nonell = _clamp((1.0 - shape_sim) * 200.0, 0.0, 100.0)
+
+    total = (sil_score * W_SILHOUETTE
+             + prof_score * W_PROFILE
+             + curv_score * W_CURVATURE
+             + trans_score * W_TRANSITIONS
+             + nonell * W_NONELLIPSOID)
+    return {
+        "silhouette": sil_score,
+        "profile": prof_score,
+        "curvature": curv_score,
+        "transitions": trans_score,
+        "non_ellipsoid": nonell,
+        "total": _clamp(total, 0.0, 100.0),
+    }
+
+
+# ============================================================
+# 11. ОТЧЁТ
+# ============================================================
+
+def _build_report_text(slices_data, norm_slices, ref_slices, param_rows,
+                       peak, transitions, curv_zone, shape_sim,
+                       problems, tags, adequacy):
+    lines = []
+    line = "=" * 40
+
+    def P(s=""):
+        lines.append(s)
+
+    P()
+    P(line)
+    P("ALESYA ANATOMICAL HEAD AUDIT")
+    P(line)
+    P()
+    P("REFERENCE is an approximate normalized anatomical model")
+    P("of an adult female head used for procedural diagnostics,")
+    P("not a universal biological standard.")
+    P()
+
+    P("--- DIMENSIONS (world units) ---")
+    P(f"Width:   {slices_data['width']:.4f}")
+    P(f"Height:  {slices_data['height']:.4f}")
+    P(f"Depth:   {slices_data['depth']:.4f}")
+    P()
+
+    P("--- NORMALIZED RATIOS ---")
+    w = max(slices_data["width"], 1e-6)
+    P(f"H / W: {slices_data['height'] / w:.3f}  "
+      f"(ref {REF_HEAD_TOTAL_HEIGHT:.3f})")
+    P(f"D / W: {slices_data['depth'] / w:.3f}  "
+      f"(ref {REF_HEAD_TOTAL_DEPTH:.3f})")
+    P(f"D / H: {slices_data['depth'] / max(slices_data['height'], 1e-6):.3f}")
+    P()
+
+    P("--- PARAMETER COMPARISON ---")
+    for row in param_rows:
+        P(f"{row['label']}")
+        P(f"  Actual:     {row['actual']:.4f}")
+        P(f"  Reference:  {row['reference']:.4f}")
+        P(f"  Deviation:  {row['deviation_pct']:+.2f}%")
+        P(f"  Status:     {row['status']}")
+    P()
+
+    w_max_norm = max(s["width"] for s in norm_slices)
+    step = max(1, len(norm_slices) // 20)
+
+    P("--- ACTUAL WIDTH PROFILE ---")
+    for i in range(0, len(norm_slices), step):
+        s = norm_slices[i]
+        bar = _ascii_bar(s["width"], w_max_norm)
+        P(f"Z={s['z_t']:+.2f}  {bar}")
+    P()
+
+    P("--- REFERENCE WIDTH PROFILE ---")
+    for i in range(0, len(ref_slices), step):
+        s = ref_slices[i]
+        bar = _ascii_bar(s["width"], 1.0)
+        P(f"Z={s['z_t']:+.2f}  {bar}")
+    P()
+
+    d_max_norm = max(abs(s["front_local"]) for s in norm_slices) or 1.0
+    P("--- ACTUAL SIDE PROFILE (front offset, world units) ---")
+    for i in range(0, len(norm_slices), step):
+        s = norm_slices[i]
+        f = s["front_local"]
+        bar = _ascii_bar(abs(f) / d_max_norm, 1.0, width=24)
+        sign = "←" if f < 0 else " "
+        P(f"Z={s['z_t']:+.2f}  {sign} {bar}  ({f:+.4f})")
+    P()
+
+    P("--- REFERENCE SIDE PROFILE (scaled, world units) ---")
+    for i in range(0, len(ref_slices), step):
+        s = ref_slices[i]
+        f = s["front_local"]
+        bar = _ascii_bar(abs(f) / d_max_norm, 1.0, width=24)
+        sign = "←" if f < 0 else " "
+        P(f"Z={s['z_t']:+.2f}  {sign} {bar}  ({f:+.4f})")
+    P()
+
+    P("--- SURFACE COMPLEXITY ---")
+    if curv_zone:
+        cmin = min(curv_zone)
+        cmax = max(curv_zone)
+        cmean = sum(curv_zone) / len(curv_zone)
+        spread = cmax - cmin
+        P(f"Mean curvature:   {cmean:.4f}")
+        P(f"Min curvature:    {cmin:.4f}")
+        P(f"Max curvature:    {cmax:.4f}")
+        P(f"Spread:           {spread:.4f}")
+        P(f"Reference shape similarity: {shape_sim:.3f} "
+          f"(1.0 = ideal match with reference profile)")
+    P()
+
+    P("--- ANATOMICAL TRANSITIONS ---")
+    for t in transitions:
+        P(f"{t['name']:<24}  {t['status']:<15}  "
+          f"strength {t['strength']:.4f}  "
+          f"(ref {t['reference']:.4f}, ratio {t['ratio']:.2f})")
+    P()
+
+    P(line)
+    P("PRIMARY DIAGNOSIS")
+    P(line)
+    for p in problems:
+        P(f"[!] {p}")
+    P()
+    P("TAGS")
+    for tag in sorted(tags):
+        P(f"[x] {tag}")
+    if not tags:
+        P("(none)")
+    P()
+
+    P(line)
+    P("CONSTRUCTION DIAGNOSIS")
+    P(line)
+    P(f"Surface complexity:     "
+      f"{'LOW' if adequacy['curvature'] < 40 else 'MEDIUM' if adequacy['curvature'] < 75 else 'HIGH'}")
+    P(f"Anatomical separation:  "
+      f"{'LOW' if adequacy['transitions'] < 40 else 'MEDIUM' if adequacy['transitions'] < 75 else 'HIGH'}")
+    P(f"Profile accuracy:       "
+      f"{'LOW' if adequacy['profile'] < 40 else 'MEDIUM' if adequacy['profile'] < 75 else 'HIGH'}")
+    P(f"Silhouette accuracy:    "
+      f"{'LOW' if adequacy['silhouette'] < 40 else 'MEDIUM' if adequacy['silhouette'] < 75 else 'HIGH'}")
+    P()
+
+    total = adequacy["total"]
+    P(f"CONSTRUCTION ADEQUACY: {total:.1f} / 100")
+    if total > 80:
+        verdict = "KEEP CURRENT METHOD"
+    elif total > 60:
+        verdict = "EXTEND CURRENT METHOD"
+    elif total > 40:
+        verdict = "EXTEND CURRENT METHOD (limited)"
+    else:
+        verdict = "CHANGE CONSTRUCTION METHOD"
+    P(f"VERDICT: {verdict}")
+    P()
+
+    P(line)
+    P("ALESYA ANATOMICAL HEAD AUDIT — SUMMARY")
+    P(line)
+    P(f"Overall proportion:     {adequacy['silhouette']:.1f} / 100")
+    P(f"Silhouette similarity:  {adequacy['silhouette']:.1f} / 100")
+    P(f"Profile similarity:     {adequacy['profile']:.1f} / 100")
+    P(f"Surface complexity:     {adequacy['curvature']:.1f} / 100")
+    P(f"Anatomical transitions: {adequacy['transitions']:.1f} / 100")
+    P(f"Construction adequacy:  {adequacy['total']:.1f} / 100")
+    P()
+    P("TOP PROBLEMS")
+    for i, p in enumerate(problems[:5], 1):
+        P(f"  {i}. {p}")
+    P()
+    P("CONSTRUCTION VERDICT")
+    P(f"  {verdict}")
+    P()
+    P(line)
+    P("RECOMMENDED NEXT CHANGES")
+    P(line)
+    for i, rec in enumerate(_recommendations(tags, adequacy), 1):
+        P(f"  {i}. {rec}")
+    P()
+    P(line)
+
+    return "\n".join(lines)
+
+
+def _recommendations(tags, adequacy):
+    rec = []
+    if "ellipsoid-like" in tags or "insufficient curvature" in tags:
+        rec.append("Increase local surface curvature by adding "
+                   "explicit anatomical bulges (brow ridge, cheekbones, "
+                   "temple depressions, jaw corner).")
+    if "forehead problem" in tags:
+        rec.append("Push forehead forward and create a distinct "
+                   "forehead-to-brow transition.")
+    if "cheekbone problem" in tags:
+        rec.append("Add outward cheekbone volume at t≈0.45 with "
+                   "sharp falloff toward cheeks.")
+    if "cheek problem" in tags:
+        rec.append("Sculpt cheek hollow below the cheekbone to break "
+                   "the smooth ellipsoid.")
+    if "jaw problem" in tags or "chin problem" in tags:
+        rec.append("Define jaw corner and chin projection as separate "
+                   "anatomical features.")
+    if "abrupt transitions" in tags:
+        rec.append("Soften sharp transitions between zones using "
+                   "smoothstep blending across a wider vertical band.")
+    if "insufficient anatomical regions" in tags:
+        rec.append("Introduce at least 4–5 explicit anatomical zones "
+                   "instead of one continuous deformation.")
+    if "too flat" in tags:
+        rec.append("Increase head depth (D/W) toward reference ~0.72.")
+    if "too deep" in tags:
+        rec.append("Reduce head depth toward reference ~0.72.")
+    if adequacy["total"] < 40:
+        rec.insert(0, "Current construction is insufficient. Build head "
+                      "from explicit anatomical zones: cranium, brow, "
+                      "cheekbone, cheek, jaw, chin.")
+    if not rec:
+        rec.append("No structural changes required; refine proportions.")
+    return rec
+
+
+# ============================================================
+# 12. ПУБЛИЧНЫЙ API
+# ============================================================
+
+def run_test() -> None:
+    output_dir = _output_dir()
+
+    # --- Математическая диагностика ---
+    debug_profile_mapping()
+    debug_profile_sphere_base()
+    debug_ring_math()
+    debug_max_width_position()
+    debug_stage_contributions()
+    debug_slice_widths()
+
+    print("Alesya head audit: preparing scene...")
+    _clear_scene()
+    _setup_render()
+    _setup_world()
+    _setup_lights()
+
+    test_coll = get_or_create_collection(TEST_COLLECTION_NAME)
+
+    print("Alesya head audit: building head from production module...")
+    head = build_head(test_coll)
+
+    print("Alesya head audit: collecting geometry...")
+    verts = _collect_vertices(head)
+
+    print("Alesya head audit: measuring slices...")
+    slices_data = _measure_slices(verts, NUM_SLICES)
+    norm_slices, w_max, d_max = _normalize_slices(slices_data)
+
+    actual_front_scale = max(
+        (abs(s["front_local"]) for s in norm_slices), default=1.0
+    ) or 1.0
+    ref_slices = _reference_slices(NUM_SLICES, actual_front_scale)
+
+    print("Alesya head audit: estimating curvature...")
+    curv = _estimate_curvature(verts, head)
+    curv_zone = _curvature_zone_profile(verts, curv, slices_data)
+
+    print("Alesya head audit: computing metrics...")
+    shape_sim = _reference_shape_similarity(norm_slices, ref_slices)
+    param_rows, peak = _build_parameter_table(slices_data, norm_slices)
+    transitions = _build_anatomical_transitions(norm_slices)
+
+    problems, tags = _diagnose_problems(
+        param_rows, transitions, curv_zone, shape_sim,
+        slices_data, norm_slices)
+
+    adequacy = _compute_construction_adequacy(
+        param_rows, transitions, shape_sim, curv_zone)
+
+    report_text = _build_report_text(
+        slices_data, norm_slices, ref_slices, param_rows,
+        peak, transitions, curv_zone, shape_sim,
+        problems, tags, adequacy)
+
+    print(report_text)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report_path = output_dir / "head_test_report.txt"
+    report_path.write_text(report_text, encoding="utf-8")
+    print(f"Report saved to: {report_path}")
+
+    print("Alesya head audit: rendering diagnostic views...")
+    cameras = _build_cameras()
+    _render_all(cameras, output_dir)
+    bpy.context.scene.camera = cameras["front"]
+
+    print("Alesya head audit: done.")
+```
+
+---
+
+## Что именно изменилось и почему
+
+**Production-геометрия не изменена.** `HEAD_*`, `WIDTH_PROFILE`, `DEPTH_PROFILE`, `FRONT_PROFILE`, амплитуды всех масок, `_apply_*`, формула деформации и `build_head(coll)` — идентичны прошлой версии.
+
+**Топология UV-сферы приведена в точное соответствие с Blender.** Раньше `_raw_sphere_positions` использовал `n_theta = max(1, int(round(segments * r)))`, что в принципе совпадает с формулой `n_theta = max(1, round(SEGMENTS * sin(phi)))`, но вычисление через `r = sin(phi)` и через `int(round(...))` давало почти то же самое, только без явного ограничения полюсов. Теперь топология задана единой функцией `_ring_topology`, которая возвращает `(i, phi, n_theta)` и явно обрабатывает полюса (`i == 0` и `i == RINGS`) как одну вершину, а на остальных параллелях использует `n_theta = max(1, int(round(SEGMENTS * sin(phi))))`. Эту же топологию использует и `_raw_sphere_positions`, и `_base_vertex_positions`, и в `build_head` совпадение сохраняется, потому что Blender создаёт UV-сферу ровно по этой схеме.
+
+**Вершина `_V` теперь хранит `ring_i`, `theta_j`, `n_theta`, `phi`.** Это позволяет диагностике точно сопоставлять кольца raw sphere и base, а также при применении масок сохранять принадлежность кольцу — важно для сравнения «до и после».
+
+**Новая диагностика `debug_profile_sphere_base()`.** Она печатает три числа рядом:
+
+- `prof_w` — `_interp_width(z_norm)`, чистое значение из `WIDTH_PROFILE`;
+- `sph_fac` — `sqrt(max(0, 1 − z²))` — теоретический множитель сжатия параллели единичной сферы;
+- `exp_w` — `prof_w · sph_fac`, теоретическая ожидаемая ширина при условии, что модель — это `профиль × сжатие параллели`;
+- `act_base_w` — фактическая ширина среза базовой головы (по той же топологии, что использует production).
+
+Плюс два отношения: `act/prof` и `act/exp`. Если `act/exp ≈ 1.0` на всех контрольных точках, значит модель действительно «профиль × sin(φ)». Если где-то сильно отличается, значит есть дополнительные факторы: `min(full_w/2, HEAD_WIDTH/2)`, `z`-смещения из-за `CHIN_LENGTH` и уплощения макушки, или несовпадение среза по `z` в самом измерении.
+
+**Новая диагностика `debug_ring_math()`.** Для восьми контрольных `z_norm` находит соответствующее кольцо raw sphere (ближайшее по `z`), берёт `raw_x_max = max(x)` на этом кольце и `final_base_x_max = max(x)` на том же кольце базовой головы, плюс `profile_width` и `half_w = min(prof_w/2, HEAD_WIDTH/2)`. Это прямая демонстрация «математики одного кольца»:
+
+```
+raw_x_max       → умножается на half_w  →  final_base_x_max
+```
+
+Если `final_base_x_max ≈ raw_x_max · half_w`, то модель действительно «умножение x сферы на half_w». Если нет — есть смещения по z из-за `CHIN_LENGTH`, уплощения макушки или эффектов `min`, и это будет видно в числах.
+
+**В `test_head.py` в начале `run_test()`** добавлены два вызова: `debug_profile_sphere_base()` и `debug_ring_math()`. Порядок диагностики теперь такой:
+
+```
+=== BASE PROFILE (pure functions) ===
+=== PROFILE → SPHERE → BASE WIDTH ===
+=== RING MATH (raw sphere vs base) ===
+=== MAX WIDTH POSITION ===
+=== STAGED DEFORMATION DIAGNOSTIC ===
+=== CHEEKBONE DELTA (t = 0.30 .. 0.65) ===
+========================================
+ALESYA ANATOMICAL HEAD AUDIT
+========================================
+```
+
+Остальная часть `test_head.py` (эталон, пороги, метрики, отчёт, рендеры) не тронута.
+
+---
+
+## Что запустить
+
+Откройте `Alesya.blend`, затем **Scripting → Open → `Alesya/tests/main.py` → Run Script (Alt+P)**.
+
+Пришлите, пожалуйста, полностью блоки:
+
+```
+=== PROFILE → SPHERE → BASE WIDTH ===
+=== RING MATH (raw sphere vs base) ===
+```
+
+По этим двум таблицам станет однозначно видно, является ли текущий `WIDTH_PROFILE` коэффициентом масштабирования UV-сферы (то есть ширина среза ≈ `WIDTH_PROFILE × sqrt(1 − z²)`), и как именно это превращается в фактический `max(x) − min(x)` на каждом кольце. После этого можно принимать решение о переработке математической модели — но не раньше, потому что сейчас ещё остаётся неотделённым вклад `sin(φ)`, `CHIN_LENGTH` и уплощения макушки, и все эти три фактора мы увидим раздельно в `RING MATH` и `PROFILE → SPHERE → BASE WIDTH`.
+
+
+============================================================
+ALESYA TEST SUITE — START                                                                                                                                                                                                                   
+============================================================                                                                                                                                                                                
+
+[TEST] tests.test_head
+----------------------------------------
+
+=== BASE PROFILE (pure functions) ===
+  z_norm     width     depth     front
+   +1.00    0.4000    0.2900   +0.0000
+   +0.90    0.3982    0.2893   -0.0070
+   +0.75    0.3950    0.2880   -0.0200
+   +0.60    0.3820    0.2828   -0.0427
+   +0.45    0.3781    0.2797   -0.0550
+   +0.30    0.3950    0.2780   -0.0550
+   +0.15    0.4119    0.2780   -0.0508
+   +0.00    0.4175    0.2730   -0.0475
+   -0.15    0.4169    0.2664   -0.0419
+   -0.30    0.4000    0.2580   -0.0250
+   -0.45    0.3611    0.2321   -0.0315
+   -0.55    0.3400    0.2180   -0.0350
+   -0.70    0.2428    0.1869   -0.0447
+   -0.84    0.1838    0.1684   -0.0500
+   -0.90    0.1600    0.1625   -0.0500
+=== END BASE PROFILE ===
+
+
+=== PROFILE → SPHERE → BASE WIDTH ===
+  z_norm    prof_w   sph_fac     exp_w   act_base_w   act/prof   act/exp
+   +1.00    0.4000    0.0000    0.0000       0.0587     0.1467    0.0000
+   +0.90    0.3982    0.4359    0.1736       0.0587     0.1474    0.3381
+   +0.75    0.3950    0.6614    0.2613       0.0587     0.1486    0.2246
+   +0.60    0.3820    0.8000    0.3056       0.0587     0.1536    0.1920
+   +0.45    0.3781    0.8930    0.3377       0.0587     0.1552    0.1738
+   +0.30    0.3950    0.9539    0.3768       0.0587     0.1486    0.1558
+   +0.15    0.4119    0.9887    0.4072       0.3218     0.7813    0.7903
+   +0.00    0.4175    1.0000    0.4175       0.4175     1.0000    1.0000
+   -0.15    0.4169    0.9887    0.4122       0.2945     0.7065    0.7145
+   -0.30    0.4000    0.9539    0.3816       0.0480     0.1199    0.1257
+   -0.45    0.3611    0.8930    0.3225       0.0124     0.0342    0.0384
+   -0.55    0.3400    0.8352    0.2840       0.0124     0.0364    0.0436
+   -0.70    0.2428    0.7141    0.1734       0.0124     0.0509    0.0713
+   -0.84    0.1838    0.5426    0.0997       0.0124     0.0673    0.1240
+   -0.90    0.1600    0.4359    0.0697       0.0124     0.0773    0.1773
+=== END PROFILE → SPHERE → BASE WIDTH ===
+
+
+=== RING MATH (raw sphere vs base) ===
+  z_norm   raw_x_max    prof_w    half_w  final_base_x_max
+   +0.90      0.4276    0.3984    0.1992            0.0852
+   +0.60      0.8032    0.3815    0.1908            0.1532
+   +0.47      0.8819    0.3761    0.1881            0.1658
+   +0.29      0.9569    0.3951    0.1976            0.1891
+   +0.00      1.0000    0.4175    0.2087            0.2087
+   -0.29      0.9569    0.4001    0.2001            0.1915
+   -0.56      0.8315    0.3398    0.1699            0.1413
+   -0.83      0.5556    0.1860    0.0930            0.0517
+=== END RING MATH ===
+
+
+=== MAX WIDTH POSITION ===
+BASE MAX WIDTH POSITION:  t = 0.492  (width = 0.4187)
+FINAL MAX WIDTH POSITION: t = 0.525  (width = 0.4276)
+=== END MAX WIDTH ===
+
+
+=== STAGED DEFORMATION DIAGNOSTIC ===
+STAGE              CROWN   FOREHEAD  CHEEKBONE      JAW     CHIN   MAX_T
+------------------------------------------------------------------------
+BASE              0.4870     0.7317     0.9919   0.6748   0.1613   0.492
++FOREHEAD         0.4874     0.7775     0.9951   0.6748   0.1613   0.492
++BROW             0.4874     0.7775     0.9951   0.6748   0.1613   0.492
++TEMPLE           0.4876     0.7768     0.9904   0.6751   0.1614   0.492
++CHEEKBONE        0.4760     0.7584     0.9669   0.6590   0.1576   0.525
++CHEEK_HOLLOW     0.4773     0.7604     0.9694   0.6608   0.1580   0.525
++JAW              0.4773     0.7604     0.9694   0.7344   0.1580   0.525
++CHIN             0.4773     0.7604     0.9694   0.7344   0.2508   0.525
+=== END STAGED DIAGNOSTIC ===
+
+
+=== CHEEKBONE DELTA (t = 0.30 .. 0.65) ===
+     t    base_w     +cb_w     delta
+ 0.308    0.3702    0.3702   +0.0000
+ 0.325    0.3781    0.3781   +0.0000
+ 0.358    0.3869    0.3869   +0.0000
+ 0.375    0.3979    0.3980   +0.0000
+ 0.392    0.4077    0.4077   +0.0001
+ 0.425    0.4130    0.4130   +0.0000
+ 0.442    0.4153    0.4173   +0.0019
+ 0.475    0.4175    0.4227   +0.0052
+ 0.492    0.4187    0.4280   +0.0093
+ 0.525    0.4180    0.4292   +0.0112
+ 0.542    0.4126    0.4203   +0.0077
+ 0.558    0.4028    0.4050   +0.0022
+ 0.592    0.3917    0.3920   +0.0002
+ 0.608    0.3829    0.3829   +0.0000
+ 0.625    0.3733    0.3733   +0.0000
+=== END CHEEKBONE DELTA ===
+
+Alesya head audit: preparing scene...
+Alesya head audit: building head from production module...
+Alesya head audit: collecting geometry...
+Alesya head audit: measuring slices...
+Alesya head audit: estimating curvature...
+Alesya head audit: computing metrics...
+
+========================================
+ALESYA ANATOMICAL HEAD AUDIT
+========================================
+
+REFERENCE is an approximate normalized anatomical model
+of an adult female head used for procedural diagnostics,
+not a universal biological standard.
+
+--- DIMENSIONS (world units) ---
+Width:   0.4276
+Height:  0.6220
+Depth:   0.3059
+
+--- NORMALIZED RATIOS ---
+H / W: 1.455  (ref 1.350)
+D / W: 0.715  (ref 0.720)
+D / H: 0.492
+
+--- PARAMETER COMPARISON ---
+Height / Width
+  Actual:     1.4547
+  Reference:  1.3500
+  Deviation:  +7.76%
+  Status:     SLIGHTLY OFF
+Depth / Width
+  Actual:     0.7153
+  Reference:  0.7200
+  Deviation:  -0.65%
+  Status:     VERY CLOSE
+Crown width (t=0.05)
+  Actual:     0.4776
+  Reference:  0.4000
+  Deviation:  +19.41%
+  Status:     SIGNIFICANTLY OFF
+Forehead width (t=0.20)
+  Actual:     0.7603
+  Reference:  0.8800
+  Deviation:  -13.60%
+  Status:     SIGNIFICANTLY OFF
+Cheekbone width (t=0.45)
+  Actual:     0.9694
+  Reference:  1.0000
+  Deviation:  -3.06%
+  Status:     CLOSE
+Jaw width (t=0.75)
+  Actual:     0.7344
+  Reference:  0.7200
+  Deviation:  +2.00%
+  Status:     VERY CLOSE
+Chin width (t=0.92)
+  Actual:     0.2510
+  Reference:  0.3000
+  Deviation:  -16.35%
+  Status:     SIGNIFICANTLY OFF
+Max width position (t)
+  Actual:     0.5250
+  Reference:  0.4500
+  Deviation:  +16.67%
+  Status:     SIGNIFICANTLY OFF
+Cheekbone / Jaw
+  Actual:     1.3200
+  Reference:  1.3889
+  Deviation:  -4.96%
+  Status:     CLOSE
+Forehead / Cheekbone
+  Actual:     0.7843
+  Reference:  0.8800
+  Deviation:  -10.88%
+  Status:     SIGNIFICANTLY OFF
+Chin / Jaw
+  Actual:     0.3417
+  Reference:  0.4167
+  Deviation:  -17.99%
+  Status:     SIGNIFICANTLY OFF
+
+--- ACTUAL WIDTH PROFILE ---
+Z=+0.01  █████
+Z=+0.04  ██████████
+Z=+0.07  ████████████
+Z=+0.11  ██████████████
+Z=+0.14  ████████████████
+Z=+0.17  █████████████████
+Z=+0.21  ███████████████████
+Z=+0.24  █████████████████████
+Z=+0.29  ██████████████████████
+Z=+0.33  ██████████████████████
+Z=+0.38  ██████████████████████
+Z=+0.42  ███████████████████████
+Z=+0.47  ████████████████████████
+Z=+0.53  ████████████████████████
+Z=+0.56  ███████████████████████
+Z=+0.61  ██████████████████████
+Z=+0.66  ████████████████████
+Z=+0.69  ███████████████████
+Z=+0.74  ██████████████████
+Z=+0.78  ██████████████
+Z=+0.81  ██████████
+Z=+0.84  ████████
+Z=+0.88  ████████
+Z=+0.91  ███████
+Z=+0.94  █████
+Z=+0.97  ███
+
+--- REFERENCE WIDTH PROFILE ---
+Z=+0.01  ████████
+Z=+0.04  ██████████
+Z=+0.07  ████████████
+Z=+0.11  ██████████████
+Z=+0.14  ███████████████
+Z=+0.17  █████████████████
+Z=+0.21  ██████████████████
+Z=+0.24  ███████████████████
+Z=+0.28  ████████████████████
+Z=+0.31  █████████████████████
+Z=+0.34  ██████████████████████
+Z=+0.38  ███████████████████████
+Z=+0.41  ███████████████████████
+Z=+0.44  ████████████████████████
+Z=+0.47  ████████████████████████
+Z=+0.51  ████████████████████████
+Z=+0.54  ███████████████████████
+Z=+0.57  ███████████████████████
+Z=+0.61  ██████████████████████
+Z=+0.64  █████████████████████
+Z=+0.68  ████████████████████
+Z=+0.71  ███████████████████
+Z=+0.74  ██████████████████
+Z=+0.78  ████████████████
+Z=+0.81  ███████████████
+Z=+0.84  ██████████████
+Z=+0.88  ████████████
+Z=+0.91  ██████████
+Z=+0.94  ████████
+Z=+0.97  ██████
+
+--- ACTUAL SIDE PROFILE (front offset, world units) ---
+Z=+0.01  ← █████  (-0.0312)
+Z=+0.04  ← █████████  (-0.0574)
+Z=+0.07  ← ████████████  (-0.0776)
+Z=+0.11  ← ██████████████  (-0.0897)
+Z=+0.14  ← ████████████████  (-0.1003)
+Z=+0.17  ← ██████████████████  (-0.1140)
+Z=+0.21  ← ████████████████████  (-0.1275)
+Z=+0.24  ← █████████████████████  (-0.1355)
+Z=+0.29  ← ██████████████████████  (-0.1402)
+Z=+0.33  ← ███████████████████████  (-0.1452)
+Z=+0.38  ← ████████████████████████  (-0.1516)
+Z=+0.42  ← ████████████████████████  (-0.1508)
+Z=+0.47  ← ███████████████████████  (-0.1437)
+Z=+0.53  ← ██████████████████████  (-0.1398)
+Z=+0.56  ← █████████████████████  (-0.1309)
+Z=+0.61  ← ███████████████████  (-0.1206)
+Z=+0.66  ← ██████████████████  (-0.1139)
+Z=+0.69  ← ████████████████  (-0.1041)
+Z=+0.74  ← ███████████████  (-0.0968)
+Z=+0.78  ← ██████████████  (-0.0894)
+Z=+0.81  ← █████████████  (-0.0817)
+Z=+0.84  ← ████████████  (-0.0763)
+Z=+0.88  ← ███████████  (-0.0713)
+Z=+0.91  ← ██████████  (-0.0627)
+Z=+0.94  ← ████████  (-0.0535)
+Z=+0.97  ← ███████  (-0.0456)
+
+--- REFERENCE SIDE PROFILE (scaled, world units) ---
+Z=+0.01  ← █████████  (-0.0543)
+Z=+0.04  ← █████████  (-0.0578)
+Z=+0.07  ← ██████████  (-0.0614)
+Z=+0.11  ← ██████████  (-0.0651)
+Z=+0.14  ← ███████████  (-0.0691)
+Z=+0.17  ← ████████████  (-0.0732)
+Z=+0.21  ← ████████████  (-0.0769)
+Z=+0.24  ← ████████████  (-0.0794)
+Z=+0.28  ← █████████████  (-0.0820)
+Z=+0.31  ← █████████████  (-0.0844)
+Z=+0.34  ← ██████████████  (-0.0863)
+Z=+0.38  ← ██████████████  (-0.0882)
+Z=+0.41  ← ██████████████  (-0.0897)
+Z=+0.44  ← ██████████████  (-0.0912)
+Z=+0.47  ← ██████████████  (-0.0908)
+Z=+0.51  ← ██████████████  (-0.0897)
+Z=+0.54  ← ██████████████  (-0.0887)
+Z=+0.57  ← ██████████████  (-0.0873)
+Z=+0.61  ← ██████████████  (-0.0858)
+Z=+0.64  ← █████████████  (-0.0843)
+Z=+0.68  ← █████████████  (-0.0827)
+Z=+0.71  ← █████████████  (-0.0812)
+Z=+0.74  ← █████████████  (-0.0797)
+Z=+0.78  ← ████████████  (-0.0793)
+Z=+0.81  ← ████████████  (-0.0793)
+Z=+0.84  ← ████████████  (-0.0793)
+Z=+0.88  ← █████████████  (-0.0810)
+Z=+0.91  ← █████████████  (-0.0831)
+Z=+0.94  ← ██████████████  (-0.0860)
+Z=+0.97  ← ██████████████  (-0.0891)
+
+--- SURFACE COMPLEXITY ---
+Mean curvature:   0.0866
+Min curvature:    0.0369
+Max curvature:    0.1710
+Spread:           0.1341
+Reference shape similarity: 0.829 (1.0 = ideal match with reference profile)
+
+--- ANATOMICAL TRANSITIONS ---
+crown_to_forehead         VERY CLOSE       strength 0.2827  (ref 0.3000, ratio 0.94)
+forehead_to_brow          SLIGHTLY STRONG  strength 0.1665  (ref 0.1500, ratio 1.11)
+brow_to_cheekbone         WEAK             strength 0.0427  (ref 0.1800, ratio 0.24)
+cheekbone_to_cheek        WEAK             strength 0.0271  (ref 0.1000, ratio 0.27)
+cheek_to_jaw              SLIGHTLY WEAK    strength 0.2079  (ref 0.2500, ratio 0.83)
+jaw_to_chin               STRONG           strength 0.5339  (ref 0.4000, ratio 1.33)
+
+========================================
+PRIMARY DIAGNOSIS
+========================================
+[!] Crown width (t=0.05): SIGNIFICANTLY OFF (dev +19.4%)
+[!] Forehead width (t=0.20): SIGNIFICANTLY OFF (dev -13.6%)
+[!] Chin width (t=0.92): SIGNIFICANTLY OFF (dev -16.3%)
+[!] Max width position (t): SIGNIFICANTLY OFF (dev +16.7%)
+[!] Forehead / Cheekbone: SIGNIFICANTLY OFF (dev -10.9%)
+[!] Chin / Jaw: SIGNIFICANTLY OFF (dev -18.0%)
+[!] Transition brow_to_cheekbone is weak (ratio 0.24).
+[!] Transition cheekbone_to_cheek is weak (ratio 0.27).
+[!] Transition jaw_to_chin is too strong (ratio 1.33).
+
+TAGS
+[x] abrupt transitions
+[x] insufficient anatomical regions
+
+========================================
+CONSTRUCTION DIAGNOSIS
+========================================
+Surface complexity:     LOW
+Anatomical separation:  MEDIUM
+Profile accuracy:       HIGH
+Silhouette accuracy:    HIGH
+
+CONSTRUCTION ADEQUACY: 60.8 / 100
+VERDICT: EXTEND CURRENT METHOD
+
+========================================
+ALESYA ANATOMICAL HEAD AUDIT — SUMMARY
+========================================
+Overall proportion:     83.2 / 100
+Silhouette similarity:  83.2 / 100
+Profile similarity:     83.2 / 100
+Surface complexity:     26.8 / 100
+Anatomical transitions: 58.2 / 100
+Construction adequacy:  60.8 / 100
+
+TOP PROBLEMS
+  1. Crown width (t=0.05): SIGNIFICANTLY OFF (dev +19.4%)
+  2. Forehead width (t=0.20): SIGNIFICANTLY OFF (dev -13.6%)
+  3. Chin width (t=0.92): SIGNIFICANTLY OFF (dev -16.3%)
+  4. Max width position (t): SIGNIFICANTLY OFF (dev +16.7%)
+  5. Forehead / Cheekbone: SIGNIFICANTLY OFF (dev -10.9%)
+
+CONSTRUCTION VERDICT
+  EXTEND CURRENT METHOD
+
+========================================
+RECOMMENDED NEXT CHANGES
+========================================
+  1. Soften sharp transitions between zones using smoothstep blending across a wider vertical band.
+  2. Introduce at least 4–5 explicit anatomical zones instead of one continuous deformation.
+
+========================================
+Report saved to: /home/lenovo/working/lab-4-(college)/eva/блендер/Alesya/tests/test_output/head_test_report.txt
+Alesya head audit: rendering diagnostic views...
+Saved: '/home/lenovo/working/lab-4-(college)/eva/блендер/Alesya/tests/test_output/head_test_front.png'
+Time: 00:04.92 (Saving: 00:00.04)
+
+Saved: '/home/lenovo/working/lab-4-(college)/eva/блендер/Alesya/tests/test_output/head_test_profile.png'
+Time: 00:04.91 (Saving: 00:00.06)
+
+Saved: '/home/lenovo/working/lab-4-(college)/eva/блендер/Alesya/tests/test_output/head_test_3q.png'
+Time: 00:04.90 (Saving: 00:00.05)
+
+Saved: '/home/lenovo/working/lab-4-(college)/eva/блендер/Alesya/tests/test_output/head_test_top.png'
+Time: 00:04.89 (Saving: 00:00.04)
+
+Alesya head audit: done.
+----------------------------------------
+[PASS] tests.test_head
+
+============================================================
+ALESYA TEST SUITE — FINISHED                                                                                                                                                                                                                
+PASSED: 1                                                                                                                                                                                                                                   
+FAILED: 0                                                                                                                                                                                                                                   
+============================================================                                                                                                                                                                                
+
+
+
